@@ -17,6 +17,7 @@ _DEFAULT_TIMEOUT = 5.0
 _DEFAULT_MAX_RETRIES = 3
 _MAX_QUEUE_SIZE = 10_000
 _DEFAULT_CAPTURE_CONTENT = True
+_DEFAULT_COMMAND_POLL_INTERVAL = 5.0
 
 
 class _Client:
@@ -32,11 +33,13 @@ class _Client:
         self.timeout: float = _DEFAULT_TIMEOUT
         self.max_retries: int = _DEFAULT_MAX_RETRIES
         self.capture_content: bool = _DEFAULT_CAPTURE_CONTENT
+        self.command_poll_interval: float = _DEFAULT_COMMAND_POLL_INTERVAL
         self._queue: queue.Queue = queue.Queue(maxsize=_MAX_QUEUE_SIZE)
         self._http: Optional[httpx.Client] = None
         self._stop_event = threading.Event()
         self._flush_thread: Optional[threading.Thread] = None
         self._atexit_registered = False
+        self._command_poller = None  # set in init() if needed
 
     def is_initialized(self) -> bool:
         return self._initialized
@@ -52,6 +55,7 @@ class _Client:
         timeout: Optional[float] = None,
         max_retries: Optional[int] = None,
         capture_content: Optional[bool] = None,
+        command_poll_interval: Optional[float] = None,
     ) -> None:
         with self._lock:
             if self._initialized:
@@ -72,6 +76,8 @@ class _Client:
                 self.max_retries = max_retries
             if capture_content is not None:
                 self.capture_content = capture_content
+            if command_poll_interval is not None:
+                self.command_poll_interval = command_poll_interval
 
             headers = {"content-type": "application/json"}
             if self.api_key:
@@ -93,6 +99,16 @@ class _Client:
             if not self._atexit_registered:
                 atexit.register(self.shutdown)
                 self._atexit_registered = True
+
+            # Optional: start the command poller if any handlers are registered
+            # AND we have an agent_name to scope by.
+            try:
+                from ._commands import _Poller, has_handlers
+                if has_handlers() and self.agent_name:
+                    self._command_poller = _Poller(self, self.command_poll_interval)
+                    self._command_poller.start()
+            except Exception as e:  # pragma: no cover
+                logger.warning("lightsei command poller failed to start: %s", e)
 
             self._initialized = True
             logger.info(
@@ -230,6 +246,11 @@ class _Client:
         self._stop_event.set()
         if self._flush_thread and self._flush_thread.is_alive():
             self._flush_thread.join(timeout=2.0)
+        if self._command_poller is not None:
+            try:
+                self._command_poller.stop()
+            except Exception:
+                pass
         try:
             self.flush(timeout=2.0)
         except Exception:
@@ -245,6 +266,11 @@ class _Client:
             self._stop_event.set()
             if self._flush_thread and self._flush_thread.is_alive():
                 self._flush_thread.join(timeout=2.0)
+            if self._command_poller is not None:
+                try:
+                    self._command_poller.stop()
+                except Exception:
+                    pass
             if self._http is not None:
                 try:
                     self._http.close()
@@ -260,10 +286,12 @@ class _Client:
             self.timeout = _DEFAULT_TIMEOUT
             self.max_retries = _DEFAULT_MAX_RETRIES
             self.capture_content = _DEFAULT_CAPTURE_CONTENT
+            self.command_poll_interval = _DEFAULT_COMMAND_POLL_INTERVAL
             self._queue = queue.Queue(maxsize=_MAX_QUEUE_SIZE)
             self._http = None
             self._stop_event = threading.Event()
             self._flush_thread = None
+            self._command_poller = None
 
 
 _client = _Client()

@@ -139,7 +139,13 @@ export default function RunDetail({ params }: { params: { id: string } }) {
       </h1>
       {run && (
         <div className="text-sm text-gray-500 mb-8">
-          agent <span className="font-mono text-gray-700">{run.agent_name}</span>
+          agent{" "}
+          <Link
+            href={`/agents/${encodeURIComponent(run.agent_name)}`}
+            className="font-mono text-gray-700 hover:text-accent-600 transition-colors"
+          >
+            {run.agent_name}
+          </Link>
           <span className="text-gray-300 mx-2">·</span>
           started {fmtTime(run.started_at)}
           {run.ended_at ? (

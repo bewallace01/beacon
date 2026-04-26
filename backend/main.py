@@ -5,7 +5,7 @@ from typing import Any, Optional
 from fastapi import Depends, FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, EmailStr, Field
-from sqlalchemy import desc, select
+from sqlalchemy import desc, select, text
 from sqlalchemy.orm import Session
 
 import policies
@@ -22,6 +22,7 @@ from migrate import upgrade_to_head
 from models import (
     Agent,
     ApiKey,
+    Command,
     Event,
     Run,
     Session as SessionRow,
@@ -31,6 +32,7 @@ from models import (
 from passwords import hash_password, verify_password
 
 SESSION_TTL = timedelta(days=30)
+COMMAND_TTL = timedelta(hours=24)
 
 
 def utcnow() -> datetime:
@@ -78,6 +80,16 @@ class SignupIn(BaseModel):
 class LoginIn(BaseModel):
     email: EmailStr
     password: str
+
+
+class CommandEnqueueIn(BaseModel):
+    kind: str = Field(min_length=1)
+    payload: dict[str, Any] = Field(default_factory=dict)
+
+
+class CommandCompleteIn(BaseModel):
+    result: Optional[dict[str, Any]] = None
+    error: Optional[str] = None
 
 
 def _serialize_api_key(k: ApiKey) -> dict[str, Any]:
@@ -564,6 +576,147 @@ def revoke_session(
         row.revoked_at = utcnow()
     session.flush()
     return _serialize_session(row, current=False)
+
+
+def _serialize_command(c: Command) -> dict[str, Any]:
+    return {
+        "id": c.id,
+        "agent_name": c.agent_name,
+        "kind": c.kind,
+        "payload": c.payload or {},
+        "status": c.status,
+        "result": c.result,
+        "error": c.error,
+        "created_at": c.created_at.isoformat(),
+        "claimed_at": c.claimed_at.isoformat() if c.claimed_at else None,
+        "completed_at": c.completed_at.isoformat() if c.completed_at else None,
+        "expires_at": c.expires_at.isoformat(),
+    }
+
+
+@app.post("/agents/{agent_name}/commands")
+def enqueue_command(
+    agent_name: str,
+    body: CommandEnqueueIn,
+    session: Session = Depends(get_session),
+    workspace_id: str = Depends(get_workspace_id),
+) -> dict[str, Any]:
+    now = utcnow()
+    ensure_agent(session, workspace_id, agent_name, now)
+    cmd = Command(
+        id=str(uuid.uuid4()),
+        workspace_id=workspace_id,
+        agent_name=agent_name,
+        kind=body.kind,
+        payload=body.payload,
+        status="pending",
+        created_at=now,
+        expires_at=now + COMMAND_TTL,
+    )
+    session.add(cmd)
+    session.flush()
+    return _serialize_command(cmd)
+
+
+@app.get("/agents/{agent_name}/commands")
+def list_commands(
+    agent_name: str,
+    limit: int = 50,
+    session: Session = Depends(get_session),
+    workspace_id: str = Depends(get_workspace_id),
+) -> dict[str, Any]:
+    limit = max(1, min(limit, 200))
+    rows = session.execute(
+        select(Command)
+        .where(
+            Command.workspace_id == workspace_id,
+            Command.agent_name == agent_name,
+        )
+        .order_by(desc(Command.created_at))
+        .limit(limit)
+    ).scalars().all()
+    return {"commands": [_serialize_command(c) for c in rows]}
+
+
+@app.post("/agents/{agent_name}/commands/claim")
+def claim_command(
+    agent_name: str,
+    session: Session = Depends(get_session),
+    workspace_id: str = Depends(get_workspace_id),
+) -> dict[str, Any]:
+    """Atomically claim the oldest pending command for this agent.
+
+    Uses Postgres `SELECT ... FOR UPDATE SKIP LOCKED` so two agents polling
+    concurrently never claim the same command.
+    """
+    now = utcnow()
+    row = session.execute(
+        text(
+            """
+            SELECT id FROM commands
+            WHERE workspace_id = :wsid
+              AND agent_name = :agent
+              AND status = 'pending'
+              AND expires_at > :now
+            ORDER BY created_at ASC
+            LIMIT 1
+            FOR UPDATE SKIP LOCKED
+            """
+        ),
+        {"wsid": workspace_id, "agent": agent_name, "now": now},
+    ).first()
+    if row is None:
+        return {"command": None}
+    cmd = session.get(Command, row.id)
+    if cmd is None:
+        return {"command": None}
+    cmd.status = "claimed"
+    cmd.claimed_at = now
+    session.flush()
+    return {"command": _serialize_command(cmd)}
+
+
+@app.post("/commands/{command_id}/complete")
+def complete_command(
+    command_id: str,
+    body: CommandCompleteIn,
+    session: Session = Depends(get_session),
+    workspace_id: str = Depends(get_workspace_id),
+) -> dict[str, Any]:
+    cmd = session.get(Command, command_id)
+    if cmd is None or cmd.workspace_id != workspace_id:
+        raise HTTPException(status_code=404, detail="command not found")
+    if cmd.status not in ("claimed", "pending"):
+        raise HTTPException(status_code=400, detail=f"command already {cmd.status}")
+    if body.error:
+        cmd.status = "failed"
+        cmd.error = body.error
+    else:
+        cmd.status = "completed"
+        cmd.result = body.result
+    cmd.completed_at = utcnow()
+    session.flush()
+    return _serialize_command(cmd)
+
+
+@app.delete("/commands/{command_id}")
+def cancel_command(
+    command_id: str,
+    session: Session = Depends(get_session),
+    workspace_id: str = Depends(get_workspace_id),
+) -> dict[str, Any]:
+    cmd = session.get(Command, command_id)
+    if cmd is None or cmd.workspace_id != workspace_id:
+        raise HTTPException(status_code=404, detail="command not found")
+    if cmd.status != "pending":
+        raise HTTPException(
+            status_code=400,
+            detail=f"can only cancel pending commands; this one is {cmd.status}",
+        )
+    cmd.status = "cancelled"
+    cmd.completed_at = utcnow()
+    session.flush()
+    return _serialize_command(cmd)
 
 
 @app.get("/agents/{agent_name}/cost")

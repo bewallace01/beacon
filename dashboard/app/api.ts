@@ -330,3 +330,44 @@ export async function revokeSession(sessionId: string): Promise<SessionSummary> 
     method: "DELETE",
   })) as SessionSummary;
 }
+
+// ----- Commands -----
+
+export type Command = {
+  id: string;
+  agent_name: string;
+  kind: string;
+  payload: Record<string, unknown>;
+  status: "pending" | "claimed" | "completed" | "failed" | "cancelled";
+  result: Record<string, unknown> | null;
+  error: string | null;
+  created_at: string;
+  claimed_at: string | null;
+  completed_at: string | null;
+  expires_at: string;
+};
+
+export async function fetchCommands(agentName: string): Promise<Command[]> {
+  const body = (await authedJson(
+    `/agents/${encodeURIComponent(agentName)}/commands`,
+  )) as { commands: Command[] };
+  return body.commands;
+}
+
+export async function enqueueCommand(
+  agentName: string,
+  kind: string,
+  payload: Record<string, unknown>,
+): Promise<Command> {
+  return (await authedJson(`/agents/${encodeURIComponent(agentName)}/commands`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ kind, payload }),
+  })) as Command;
+}
+
+export async function cancelCommand(commandId: string): Promise<Command> {
+  return (await authedJson(`/commands/${commandId}`, {
+    method: "DELETE",
+  })) as Command;
+}

@@ -13,6 +13,7 @@ import logging
 from typing import Any, Optional
 
 from ._client import _client
+from ._commands import on_command
 from ._context import get_run_id
 from ._track import track
 from .errors import LightseiError, LightseiPolicyError
@@ -27,6 +28,7 @@ __all__ = [
     "shutdown",
     "check_policy",
     "get_run_id",
+    "on_command",
     "LightseiError",
     "LightseiPolicyError",
 ]
@@ -43,11 +45,16 @@ def init(
     timeout: Optional[float] = None,
     max_retries: Optional[int] = None,
     capture_content: Optional[bool] = None,
+    command_poll_interval: Optional[float] = None,
 ) -> None:
     """Initialize Lightsei. Idempotent: a second call is ignored.
 
     Set capture_content=False to opt out of recording the messages and
     response text in events. Token counts and metadata are still captured.
+
+    Set command_poll_interval (seconds) to change how often the background
+    thread checks the dashboard for pending commands. Default 5 seconds.
+    Register handlers with `@lightsei.on_command(kind)` BEFORE calling init().
     """
     _client.init(
         api_key=api_key,
@@ -59,6 +66,7 @@ def init(
         timeout=timeout,
         max_retries=max_retries,
         capture_content=capture_content,
+        command_poll_interval=command_poll_interval,
     )
     _auto_patch()
 

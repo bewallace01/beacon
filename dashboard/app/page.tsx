@@ -108,7 +108,14 @@ export default function Home() {
                       {fmtTime(r.started_at)}
                     </Link>
                   </td>
-                  <td className="px-4 py-3 text-gray-800">{r.agent_name}</td>
+                  <td className="px-4 py-3 text-gray-800">
+                    <Link
+                      href={`/agents/${encodeURIComponent(r.agent_name)}`}
+                      className="hover:text-accent-600 transition-colors"
+                    >
+                      {r.agent_name}
+                    </Link>
+                  </td>
                   <td className="px-4 py-3 font-mono text-xs text-gray-600">
                     {r.model ?? "—"}
                   </td>
