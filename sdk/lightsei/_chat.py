@@ -21,6 +21,7 @@ content. Errors raised by the handler are recorded as the message's error.
 """
 import logging
 import threading
+import types
 from typing import Any, Callable, List, Optional
 
 logger = logging.getLogger("lightsei.chat")
@@ -97,33 +98,64 @@ class _ChatPoller:
         except BaseException as e:
             self._complete(message_id, error=repr(e))
             return
+        # Streaming: handler returned a generator/iterator. Post each yield
+        # as a delta chunk; after the iterator is exhausted, mark the message
+        # complete (server already has the accumulated content).
+        if isinstance(result, types.GeneratorType) or (
+            hasattr(result, "__iter__") and not isinstance(result, (str, bytes, dict, list))
+        ):
+            try:
+                for chunk in result:
+                    if not chunk:
+                        continue
+                    self._post_chunk(message_id, str(chunk))
+            except BaseException as e:
+                self._complete(message_id, error=repr(e))
+                return
+            self._complete(message_id)  # keep server-accumulated content
+            return
         if result is None:
             self._complete(message_id, content="")
             return
         if isinstance(result, str):
             self._complete(message_id, content=result)
             return
-        # Allow returning {"content": "...", ...} for forward-compat
         if isinstance(result, dict) and "content" in result:
             self._complete(message_id, content=str(result["content"]))
             return
-        # Fallback: stringify whatever the handler gave us
         self._complete(message_id, content=str(result))
+
+    def _post_chunk(self, message_id: Optional[str], delta: str) -> None:
+        if message_id is None or self._client._http is None:
+            return
+        try:
+            self._client._http.post(
+                f"/messages/{message_id}/chunk",
+                json={"delta": delta},
+                timeout=self._client.timeout,
+            )
+        except Exception as e:
+            logger.warning("lightsei chat chunk post failed: %s", e)
+
+    _SENTINEL = object()
 
     def _complete(
         self,
         message_id: Optional[str],
         *,
-        content: Optional[str] = None,
+        content: Any = _SENTINEL,
         error: Optional[str] = None,
     ) -> None:
+        """If content is not passed (sentinel), the server keeps whatever
+        it accumulated from chunks. Pass content=None or '' to explicitly
+        clear; pass a string to overwrite."""
         if message_id is None or self._client._http is None:
             return
         body: dict[str, Any] = {}
         if error is not None:
             body["error"] = error
-        else:
-            body["content"] = content or ""
+        elif content is not self._SENTINEL:
+            body["content"] = content if content is not None else ""
         try:
             self._client._http.post(
                 f"/messages/{message_id}/complete",

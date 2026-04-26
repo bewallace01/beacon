@@ -87,13 +87,19 @@ export default function ChatPage({ params }: { params: { name: string } }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [agentName]);
 
+  // Adaptive polling: 400ms while a message is in flight (streaming feel),
+  // 1s otherwise. The interval re-evaluates on every messages change.
   useEffect(() => {
     if (!activeThreadId) return;
     loadActive();
-    const id = setInterval(loadActive, 1000);
+    const inFlight = messages.some(
+      (m) => m.status === "in_progress" || m.status === "pending",
+    );
+    const ms = inFlight ? 400 : 1000;
+    const id = setInterval(loadActive, ms);
     return () => clearInterval(id);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeThreadId]);
+  }, [activeThreadId, messages]);
 
   // auto-scroll on new messages
   useEffect(() => {
@@ -243,7 +249,10 @@ export default function ChatPage({ params }: { params: { name: string } }) {
                   </div>
                 )}
                 {messages.map((m) => {
-                  const isPending = m.status === "pending" || m.status === "in_progress";
+                  const isStreaming = m.status === "in_progress" && !!m.content;
+                  const isWaiting =
+                    m.status === "pending" ||
+                    (m.status === "in_progress" && !m.content);
                   const isFailed = m.status === "failed";
                   return (
                     <div key={m.id} className="space-y-1">
@@ -258,7 +267,7 @@ export default function ChatPage({ params }: { params: { name: string } }) {
                             : bubbleColors(m.role))
                         }
                       >
-                        {isPending ? (
+                        {isWaiting ? (
                           <span className="text-gray-400 italic">thinking…</span>
                         ) : isFailed ? (
                           <>
@@ -268,9 +277,14 @@ export default function ChatPage({ params }: { params: { name: string } }) {
                             {m.error}
                           </>
                         ) : (
-                          m.content || (
-                            <span className="text-gray-400 italic">(empty)</span>
-                          )
+                          <>
+                            {m.content || (
+                              <span className="text-gray-400 italic">(empty)</span>
+                            )}
+                            {isStreaming && (
+                              <span className="inline-block w-1.5 h-3.5 bg-gray-400 ml-0.5 animate-pulse align-middle" />
+                            )}
+                          </>
                         )}
                       </div>
                     </div>

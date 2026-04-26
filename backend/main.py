@@ -114,6 +114,10 @@ class ThreadMessageCompleteIn(BaseModel):
     error: Optional[str] = None
 
 
+class ThreadMessageChunkIn(BaseModel):
+    delta: str
+
+
 def _serialize_api_key(k: ApiKey) -> dict[str, Any]:
     return {
         "id": k.id,
@@ -1000,6 +1004,32 @@ def claim_thread_turn(
     }
 
 
+@app.post("/messages/{message_id}/chunk")
+def append_thread_message_chunk(
+    message_id: str,
+    body: ThreadMessageChunkIn,
+    session: Session = Depends(get_session),
+    workspace_id: str = Depends(get_workspace_id),
+) -> dict[str, Any]:
+    """Append streaming output to an in-progress assistant message."""
+    msg = session.get(ThreadMessage, message_id)
+    if msg is None:
+        raise HTTPException(status_code=404, detail="message not found")
+    t = session.get(Thread, msg.thread_id)
+    if t is None or t.workspace_id != workspace_id:
+        raise HTTPException(status_code=404, detail="message not found")
+    if msg.status not in ("pending", "in_progress"):
+        raise HTTPException(
+            status_code=400, detail=f"message already {msg.status}"
+        )
+    if msg.status == "pending":
+        msg.status = "in_progress"
+    msg.content = (msg.content or "") + body.delta
+    t.updated_at = utcnow()
+    session.flush()
+    return _serialize_thread_message(msg)
+
+
 @app.post("/messages/{message_id}/complete")
 def complete_thread_message(
     message_id: str,
@@ -1024,7 +1054,10 @@ def complete_thread_message(
         msg.error = body.error
     else:
         msg.status = "completed"
-        msg.content = body.content or ""
+        # If the caller passed content, that wins (final authoritative). If
+        # not, keep whatever we accumulated from chunks.
+        if body.content is not None:
+            msg.content = body.content
     msg.completed_at = now
     t.updated_at = now
     session.flush()
