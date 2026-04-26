@@ -8,7 +8,7 @@ Hosted at **https://app.lightsei.com**.
 
 ```bash
 # 1. install the SDK
-pip install "git+https://github.com/bewallace01/beacon.git#subdirectory=sdk" openai
+pip install "git+https://github.com/bewallace01/lightsei.git#subdirectory=sdk" openai
 
 # 2. sign up at https://app.lightsei.com/signup, copy the api key (shown once)
 export LIGHTSEI_API_KEY="bk_..."
