@@ -1,0 +1,128 @@
+import http.server
+import json
+import threading
+import time
+from contextlib import contextmanager
+from typing import Iterator
+
+import pytest
+
+import beacon
+from beacon._client import _client
+
+
+@pytest.fixture(autouse=True)
+def _reset_client():
+    yield
+    _client._reset_for_tests()
+
+
+@contextmanager
+def fake_backend(received: list[dict]) -> Iterator[str]:
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def do_POST(self):  # noqa: N802
+            length = int(self.headers.get("content-length", "0") or "0")
+            body = self.rfile.read(length) if length else b""
+            try:
+                data = json.loads(body) if body else {}
+            except json.JSONDecodeError:
+                data = {}
+
+            if self.path == "/events":
+                received.append(data)
+                self.send_response(200)
+                self.send_header("content-type", "application/json")
+                self.end_headers()
+                self.wfile.write(b'{"id":1,"status":"ok"}')
+            elif self.path == "/policy/check":
+                self.send_response(200)
+                self.send_header("content-type", "application/json")
+                self.end_headers()
+                self.wfile.write(b'{"allow":true}')
+            else:
+                self.send_error(404)
+
+        def log_message(self, *_args, **_kwargs):  # silence stderr
+            return
+
+    server = http.server.HTTPServer(("127.0.0.1", 0), Handler)
+    port = server.server_address[1]
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield f"http://127.0.0.1:{port}"
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_init_is_idempotent():
+    beacon.init(api_key="k1", agent_name="first", base_url="http://127.0.0.1:1")
+    beacon.init(api_key="k2", agent_name="second", base_url="http://127.0.0.1:1")
+    assert _client.agent_name == "first"
+    assert _client.api_key == "k1"
+
+
+def test_emit_and_flush_against_fake_backend():
+    received: list[dict] = []
+    with fake_backend(received) as url:
+        beacon.init(
+            api_key="k", agent_name="demo", base_url=url, flush_interval=0.1,
+        )
+
+        @beacon.track
+        def do_work():
+            beacon.emit("custom", {"x": 1})
+            return "ok"
+
+        assert do_work() == "ok"
+        beacon.flush(timeout=2.0)
+        # give background thread one more tick
+        time.sleep(0.2)
+
+    kinds = [e.get("kind") for e in received]
+    assert "run_started" in kinds
+    assert "run_ended" in kinds
+    assert "custom" in kinds
+
+    custom = next(e for e in received if e["kind"] == "custom")
+    assert custom["payload"] == {"x": 1}
+    assert custom["agent_name"] == "demo"
+
+
+def test_run_completes_with_backend_offline():
+    # 127.0.0.1:1 has nothing listening; connections fail fast
+    beacon.init(
+        api_key="k",
+        agent_name="demo",
+        base_url="http://127.0.0.1:1",
+        flush_interval=0.05,
+        timeout=0.2,
+        max_retries=2,
+    )
+
+    @beacon.track
+    def do_work():
+        beacon.emit("custom", {"x": 1})
+        return "ok"
+
+    # User code must keep running even though every send will fail.
+    assert do_work() == "ok"
+    # flush must not raise either
+    beacon.flush(timeout=0.5)
+
+
+def test_emit_before_init_is_silent():
+    # No init. emit() must not raise and must not connect.
+    beacon.emit("anything", {"x": 1})
+
+
+def test_policy_check_fails_open_when_offline():
+    beacon.init(
+        api_key="k",
+        agent_name="demo",
+        base_url="http://127.0.0.1:1",
+        timeout=0.2,
+    )
+    decision = beacon.check_policy("openai.chat.completions.create")
+    assert decision == {"allow": True}

@@ -1,0 +1,47 @@
+services:
+  db:
+    image: postgres:16-alpine
+    container_name: beacon-db
+    environment:
+      POSTGRES_USER: beacon
+      POSTGRES_PASSWORD: beacon
+      POSTGRES_DB: beacon
+    volumes:
+      - beacon_pg:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U beacon -d beacon"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+    restart: unless-stopped
+
+  backend:
+    build: ./backend
+    container_name: beacon-backend
+    ports:
+      - "8000:8000"
+    environment:
+      - BEACON_DATABASE_URL=postgresql+psycopg://beacon:beacon@db:5432/beacon
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: unless-stopped
+
+  dashboard:
+    build:
+      context: ./dashboard
+      args:
+        - NEXT_PUBLIC_BEACON_API_URL=http://localhost:8000
+        - NEXT_PUBLIC_BEACON_API_KEY=demo-key
+    container_name: beacon-dashboard
+    ports:
+      - "3000:3000"
+    environment:
+      - NEXT_PUBLIC_BEACON_API_URL=http://localhost:8000
+      - NEXT_PUBLIC_BEACON_API_KEY=demo-key
+    depends_on:
+      - backend
+    restart: unless-stopped
+
+volumes:
+  beacon_pg:
