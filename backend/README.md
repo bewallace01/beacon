@@ -60,6 +60,22 @@ All events for one run, oldest first. 404 if the run doesn't exist.
 curl -s http://localhost:8000/runs/r1/events
 ```
 
+## Tests
+
+```bash
+cd backend
+pip install -r requirements-dev.txt
+pytest
+```
+
+The conftest spawns a throwaway `postgres:18-alpine` container on a free port and tears it down on exit. To point at an existing test DB instead:
+
+```bash
+LIGHTSEI_TEST_DATABASE_URL=postgresql+psycopg://test:test@127.0.0.1:5432/test pytest
+```
+
+CI (`.github/workflows/ci.yml`) runs against a sidecar postgres service.
+
 ## Schema
 
 ```sql
