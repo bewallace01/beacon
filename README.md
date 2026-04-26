@@ -2,6 +2,39 @@
 
 Drop-in observability and guardrails for AI agents and bots.
 
+Hosted at **https://app.lightsei.com**.
+
+## Quickstart (use the hosted version)
+
+```bash
+# 1. install the SDK
+pip install "git+https://github.com/bewallace01/beacon.git#subdirectory=sdk" openai
+
+# 2. sign up at https://app.lightsei.com/signup, copy the api key (shown once)
+export BEACON_API_KEY="bk_..."
+
+# 3. point the SDK at the hosted backend
+export BEACON_BASE_URL="https://api.lightsei.com"
+```
+
+```python
+import beacon, openai, os
+
+beacon.init(
+    api_key=os.environ["BEACON_API_KEY"],
+    agent_name="my-bot",
+    base_url=os.environ["BEACON_BASE_URL"],
+)
+
+client = openai.OpenAI()  # picks up OPENAI_API_KEY
+client.chat.completions.create(
+    model="gpt-4o-mini",
+    messages=[{"role": "user", "content": "hi"}],
+)
+```
+
+Refresh https://app.lightsei.com to see the run.
+
 ## Demo
 
 The whole loop: bot → SDK → backend → dashboard. Covers both providers and streaming.
