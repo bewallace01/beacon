@@ -8,9 +8,9 @@ from typing import Any, Optional
 
 import httpx
 
-logger = logging.getLogger("beacon")
+logger = logging.getLogger("lightsei")
 
-_DEFAULT_BASE_URL = os.environ.get("BEACON_BASE_URL", "http://localhost:8000")
+_DEFAULT_BASE_URL = os.environ.get("LIGHTSEI_BASE_URL", "http://localhost:8000")
 _DEFAULT_FLUSH_INTERVAL = 1.0
 _DEFAULT_BATCH_SIZE = 100
 _DEFAULT_TIMEOUT = 5.0
@@ -52,7 +52,7 @@ class _Client:
     ) -> None:
         with self._lock:
             if self._initialized:
-                logger.debug("beacon.init() called again; ignoring")
+                logger.debug("lightsei.init() called again; ignoring")
                 return
             self.api_key = api_key
             self.agent_name = agent_name
@@ -80,7 +80,7 @@ class _Client:
             self._stop_event = threading.Event()
             self._flush_thread = threading.Thread(
                 target=self._flush_loop,
-                name="beacon-flush",
+                name="lightsei-flush",
                 daemon=True,
             )
             self._flush_thread.start()
@@ -91,7 +91,7 @@ class _Client:
 
             self._initialized = True
             logger.info(
-                "beacon initialized agent=%s version=%s base_url=%s",
+                "lightsei initialized agent=%s version=%s base_url=%s",
                 agent_name, version, self.base_url,
             )
 
@@ -105,13 +105,13 @@ class _Client:
         timestamp: Optional[str] = None,
     ) -> None:
         if not self._initialized:
-            logger.debug("beacon.emit before init; dropping kind=%s", kind)
+            logger.debug("lightsei.emit before init; dropping kind=%s", kind)
             return
         from ._context import get_run_id
 
         rid = run_id or get_run_id()
         if rid is None:
-            logger.debug("beacon.emit with no run_id; dropping kind=%s", kind)
+            logger.debug("lightsei.emit with no run_id; dropping kind=%s", kind)
             return
         event: dict[str, Any] = {
             "run_id": rid,
@@ -124,7 +124,7 @@ class _Client:
         try:
             self._queue.put_nowait(event)
         except queue.Full:
-            logger.warning("beacon event queue full; dropping kind=%s", kind)
+            logger.warning("lightsei event queue full; dropping kind=%s", kind)
 
         # opportunistic flush trigger when over batch size
         if self._queue.qsize() >= self.batch_size:
@@ -151,7 +151,7 @@ class _Client:
             r.raise_for_status()
             return r.json()
         except Exception as e:  # graceful degradation: fail open
-            logger.warning("beacon policy check failed (fail-open): %s", e)
+            logger.warning("lightsei policy check failed (fail-open): %s", e)
             return {"allow": True}
 
     def flush(self, timeout: float = 2.0) -> None:
@@ -187,7 +187,7 @@ class _Client:
                 if batch:
                     self._send_batch(batch)
             except Exception as e:  # belt and suspenders
-                logger.warning("beacon flush loop error: %s", e)
+                logger.warning("lightsei flush loop error: %s", e)
             if triggered:
                 # one final drain after stop signal so shutdown flushes
                 try:
@@ -213,7 +213,7 @@ class _Client:
             except Exception as e:
                 if attempt == self.max_retries - 1:
                     logger.warning(
-                        "beacon failed to post event after %d attempts: %s",
+                        "lightsei failed to post event after %d attempts: %s",
                         self.max_retries, e,
                     )
                     return

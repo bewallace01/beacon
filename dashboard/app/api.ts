@@ -1,14 +1,14 @@
 export const API_URL =
-  process.env.NEXT_PUBLIC_BEACON_API_URL || "http://localhost:8000";
+  process.env.NEXT_PUBLIC_LIGHTSEI_API_URL || "http://localhost:8000";
 
 // Optional fallback bearer token baked at build time. Local docker compose
 // sets this to "demo-key" so the spine demo works without logging in. In
 // production it's empty: visitors must log in.
-export const FALLBACK_API_KEY = process.env.NEXT_PUBLIC_BEACON_API_KEY || "";
+export const FALLBACK_API_KEY = process.env.NEXT_PUBLIC_LIGHTSEI_API_KEY || "";
 
-const SESSION_KEY = "beacon.session_token";
-const USER_KEY = "beacon.user";
-const WORKSPACE_KEY = "beacon.workspace";
+const SESSION_KEY = "lightsei.session_token";
+const USER_KEY = "lightsei.user";
+const WORKSPACE_KEY = "lightsei.workspace";
 
 export class UnauthorizedError extends Error {
   constructor(message = "unauthorized") {

@@ -1,6 +1,6 @@
 """Database engine + session management.
 
-Postgres-only since Phase 4.1. Connection URL comes from BEACON_DATABASE_URL.
+Postgres-only since Phase 4.1. Connection URL comes from LIGHTSEI_DATABASE_URL.
 """
 import os
 from contextlib import contextmanager
@@ -11,8 +11,8 @@ from sqlalchemy import create_engine, text
 from sqlalchemy.orm import Session, sessionmaker
 
 _RAW_DATABASE_URL = os.environ.get(
-    "BEACON_DATABASE_URL",
-    "postgresql+psycopg://beacon:beacon@localhost:5432/beacon",
+    "LIGHTSEI_DATABASE_URL",
+    "postgresql+psycopg://lightsei:lightsei@localhost:5432/lightsei",
 )
 
 

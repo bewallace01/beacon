@@ -2,10 +2,10 @@
 
 Patches `anthropic.resources.messages.Messages.create` and the async
 equivalent. Same shape as `openai_patch`:
-- Idempotent (`_beacon_patched` marker on the class)
+- Idempotent (`_lightsei_patched` marker on the class)
 - Skips silently if `anthropic` isn't installed
 - Streaming (`stream=True`) passes through, deferred to a later phase
-- Calls /policy/check before the underlying create; raises BeaconPolicyError
+- Calls /policy/check before the underlying create; raises LightseiPolicyError
   on deny
 - Emits llm_call_started, llm_call_completed (with model + input/output
   tokens + duration), llm_call_failed
@@ -18,12 +18,12 @@ from typing import Any
 
 from .._client import _client
 from .._context import get_run_id
-from ..errors import BeaconPolicyError
+from ..errors import LightseiPolicyError
 from ._streamtap import _AsyncStreamTap, _SyncStreamTap
 
-logger = logging.getLogger("beacon.anthropic")
+logger = logging.getLogger("lightsei.anthropic")
 
-_PATCH_MARKER = "_beacon_patched"
+_PATCH_MARKER = "_lightsei_patched"
 _ACTION = "anthropic.messages.create"
 
 
@@ -109,7 +109,7 @@ def _check_policy_or_raise(req: dict[str, Any]) -> None:
     if not decision.get("allow", True):
         reason = decision.get("reason", "policy denied")
         _client.emit("policy_denied", {"action": _ACTION, **decision})
-        raise BeaconPolicyError(reason, decision)
+        raise LightseiPolicyError(reason, decision)
 
 
 def _instrumented_call(original, self, args, kwargs):

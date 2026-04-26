@@ -1,11 +1,11 @@
 from typing import Any, Optional
 
 
-class BeaconError(Exception):
-    """Base class for Beacon-raised errors."""
+class LightseiError(Exception):
+    """Base class for Lightsei-raised errors."""
 
 
-class BeaconPolicyError(BeaconError):
+class LightseiPolicyError(LightseiError):
     """Raised when a policy check denies an action."""
 
     def __init__(self, reason: str, decision: Optional[dict[str, Any]] = None):

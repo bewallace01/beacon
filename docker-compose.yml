@@ -1,15 +1,15 @@
 services:
   db:
     image: postgres:16-alpine
-    container_name: beacon-db
+    container_name: lightsei-db
     environment:
-      POSTGRES_USER: beacon
-      POSTGRES_PASSWORD: beacon
-      POSTGRES_DB: beacon
+      POSTGRES_USER: lightsei
+      POSTGRES_PASSWORD: lightsei
+      POSTGRES_DB: lightsei
     volumes:
-      - beacon_pg:/var/lib/postgresql/data
+      - lightsei_pg:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U beacon -d beacon"]
+      test: ["CMD-SHELL", "pg_isready -U lightsei -d lightsei"]
       interval: 2s
       timeout: 3s
       retries: 30
@@ -17,11 +17,11 @@ services:
 
   backend:
     build: ./backend
-    container_name: beacon-backend
+    container_name: lightsei-backend
     ports:
       - "8000:8000"
     environment:
-      - BEACON_DATABASE_URL=postgresql+psycopg://beacon:beacon@db:5432/beacon
+      - LIGHTSEI_DATABASE_URL=postgresql+psycopg://lightsei:lightsei@db:5432/lightsei
     depends_on:
       db:
         condition: service_healthy
@@ -31,17 +31,17 @@ services:
     build:
       context: ./dashboard
       args:
-        - NEXT_PUBLIC_BEACON_API_URL=http://localhost:8000
-        - NEXT_PUBLIC_BEACON_API_KEY=demo-key
-    container_name: beacon-dashboard
+        - NEXT_PUBLIC_LIGHTSEI_API_URL=http://localhost:8000
+        - NEXT_PUBLIC_LIGHTSEI_API_KEY=demo-key
+    container_name: lightsei-dashboard
     ports:
       - "3000:3000"
     environment:
-      - NEXT_PUBLIC_BEACON_API_URL=http://localhost:8000
-      - NEXT_PUBLIC_BEACON_API_KEY=demo-key
+      - NEXT_PUBLIC_LIGHTSEI_API_URL=http://localhost:8000
+      - NEXT_PUBLIC_LIGHTSEI_API_KEY=demo-key
     depends_on:
       - backend
     restart: unless-stopped
 
 volumes:
-  beacon_pg:
+  lightsei_pg:

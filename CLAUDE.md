@@ -1,6 +1,6 @@
 # Instructions for Claude Code
 
-You are building Beacon. This file tells you how to work on it.
+You are building Lightsei (formerly code-named Beacon). This file tells you how to work on it.
 
 ## Read first, every session
 
@@ -37,7 +37,7 @@ If verification can't be done (e.g., requires a real OpenAI key the user hasn't 
 1. **Stay in the current phase.** Never start work on a future phase, even if you think it would be easy. Never touch the Parking Lot.
 2. **Never expand scope mid-task.** If you notice something else that needs doing, add it to the Parking Lot or the current phase's task list and keep going on the original task.
 3. **Ask before deviating.** If a task as written can't be done as-is (missing info, bad assumption, blocked dependency), stop and ask the user. Do not silently substitute a different approach.
-4. **Graceful degradation is non-negotiable.** SDK code must never crash the user's program if Beacon's backend is unreachable. Wrap network calls, log warnings, continue.
+4. **Graceful degradation is non-negotiable.** SDK code must never crash the user's program if Lightsei's backend is unreachable. Wrap network calls, log warnings, continue.
 5. **Idempotent everything.** `init()` safe to call twice. Patches safe to apply twice. Migrations safe to re-run.
 6. **No em dashes in any docs, comments, or generated code strings.** Use commas, colons, or rewrite. (User preference.)
 7. **Tests come later, not now.** Phase 1 doesn't need a test suite. Manual verification is enough until the spine works.
@@ -47,7 +47,7 @@ If verification can't be done (e.g., requires a real OpenAI key the user hasn't 
 Create directories as needed when their phase calls for them. Don't pre-create all of them.
 
 ```
-beacon/
+lightsei/
   MEMORY.md
   TASKS.md
   CLAUDE.md            (this file)

@@ -1,6 +1,6 @@
-# Beacon — Tasks
+# Lightsei — Tasks
 
-Read MEMORY.md first if it's been a while.
+Read MEMORY.md first if it's been a while. (Older Done Log entries call the project "Beacon" — that was the working code-name through Phase 4. Same product.)
 
 ## NOW
 

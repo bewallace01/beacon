@@ -1,4 +1,4 @@
-# Beacon
+# Lightsei
 
 Drop-in observability and guardrails for AI agents and bots.
 
@@ -11,19 +11,19 @@ Hosted at **https://app.lightsei.com**.
 pip install "git+https://github.com/bewallace01/beacon.git#subdirectory=sdk" openai
 
 # 2. sign up at https://app.lightsei.com/signup, copy the api key (shown once)
-export BEACON_API_KEY="bk_..."
+export LIGHTSEI_API_KEY="bk_..."
 
 # 3. point the SDK at the hosted backend
-export BEACON_BASE_URL="https://api.lightsei.com"
+export LIGHTSEI_BASE_URL="https://api.lightsei.com"
 ```
 
 ```python
-import beacon, openai, os
+import lightsei, openai, os
 
-beacon.init(
-    api_key=os.environ["BEACON_API_KEY"],
+lightsei.init(
+    api_key=os.environ["LIGHTSEI_API_KEY"],
     agent_name="my-bot",
-    base_url=os.environ["BEACON_BASE_URL"],
+    base_url=os.environ["LIGHTSEI_BASE_URL"],
 )
 
 client = openai.OpenAI()  # picks up OPENAI_API_KEY
@@ -66,7 +66,7 @@ Start with `MEMORY.md`, then `TASKS.md`. That's the whole plan.
 ## Layout
 
 ```
-backend/     FastAPI ingest service (SQLite for now)
+backend/     FastAPI ingest service (Postgres)
 sdk/         Python SDK (install with `pip install -e ./sdk`)
 dashboard/   Next.js dashboard
 examples/    demo bots
@@ -75,12 +75,12 @@ examples/    demo bots
 ## For users (eventually)
 
 ```bash
-pip install beacon
+pip install lightsei
 ```
 
 ```python
-import beacon
-beacon.init("sk-...")
+import lightsei
+lightsei.init("sk-...")
 ```
 
 That's the install. Everything after that is automatic.

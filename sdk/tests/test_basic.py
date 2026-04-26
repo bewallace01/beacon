@@ -7,8 +7,8 @@ from typing import Iterator
 
 import pytest
 
-import beacon
-from beacon._client import _client
+import lightsei
+from lightsei._client import _client
 
 
 @pytest.fixture(autouse=True)
@@ -57,8 +57,8 @@ def fake_backend(received: list[dict]) -> Iterator[str]:
 
 
 def test_init_is_idempotent():
-    beacon.init(api_key="k1", agent_name="first", base_url="http://127.0.0.1:1")
-    beacon.init(api_key="k2", agent_name="second", base_url="http://127.0.0.1:1")
+    lightsei.init(api_key="k1", agent_name="first", base_url="http://127.0.0.1:1")
+    lightsei.init(api_key="k2", agent_name="second", base_url="http://127.0.0.1:1")
     assert _client.agent_name == "first"
     assert _client.api_key == "k1"
 
@@ -66,17 +66,17 @@ def test_init_is_idempotent():
 def test_emit_and_flush_against_fake_backend():
     received: list[dict] = []
     with fake_backend(received) as url:
-        beacon.init(
+        lightsei.init(
             api_key="k", agent_name="demo", base_url=url, flush_interval=0.1,
         )
 
-        @beacon.track
+        @lightsei.track
         def do_work():
-            beacon.emit("custom", {"x": 1})
+            lightsei.emit("custom", {"x": 1})
             return "ok"
 
         assert do_work() == "ok"
-        beacon.flush(timeout=2.0)
+        lightsei.flush(timeout=2.0)
         # give background thread one more tick
         time.sleep(0.2)
 
@@ -92,7 +92,7 @@ def test_emit_and_flush_against_fake_backend():
 
 def test_run_completes_with_backend_offline():
     # 127.0.0.1:1 has nothing listening; connections fail fast
-    beacon.init(
+    lightsei.init(
         api_key="k",
         agent_name="demo",
         base_url="http://127.0.0.1:1",
@@ -101,28 +101,28 @@ def test_run_completes_with_backend_offline():
         max_retries=2,
     )
 
-    @beacon.track
+    @lightsei.track
     def do_work():
-        beacon.emit("custom", {"x": 1})
+        lightsei.emit("custom", {"x": 1})
         return "ok"
 
     # User code must keep running even though every send will fail.
     assert do_work() == "ok"
     # flush must not raise either
-    beacon.flush(timeout=0.5)
+    lightsei.flush(timeout=0.5)
 
 
 def test_emit_before_init_is_silent():
     # No init. emit() must not raise and must not connect.
-    beacon.emit("anything", {"x": 1})
+    lightsei.emit("anything", {"x": 1})
 
 
 def test_policy_check_fails_open_when_offline():
-    beacon.init(
+    lightsei.init(
         api_key="k",
         agent_name="demo",
         base_url="http://127.0.0.1:1",
         timeout=0.2,
     )
-    decision = beacon.check_policy("openai.chat.completions.create")
+    decision = lightsei.check_policy("openai.chat.completions.create")
     assert decision == {"allow": True}

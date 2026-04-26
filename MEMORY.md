@@ -1,6 +1,6 @@
-# Beacon — Memory
+# Lightsei — Memory
 
-> Working name. Rename anytime, just update this file.
+> Project was originally code-named "Beacon" through Phase 4. Renamed to Lightsei (matching lightsei.com) on 2026-04-25. Older Done Log entries still say "Beacon" — those are historical record, leave them alone.
 
 This file is the source of truth for the project. Read it at the start of every session. If something here is wrong or outdated, fix it before doing anything else.
 
@@ -64,7 +64,7 @@ These exist because momentum matters more than perfection. Re-read these when yo
 
 1. **Build the spine first.** The spine is: bot → SDK → backend → dashboard, end to end, ugly but working. Nothing else gets built until the spine demo runs.
 2. **One framework first.** OpenAI Python only. Resist adding Anthropic, LangChain, etc. until spine is done.
-3. **Dogfood before features.** One real bot using Beacon before adding new features.
+3. **Dogfood before features.** One real bot using Lightsei before adding new features.
 4. **Done means it works, not it's perfect.** Ugly UI is fine. Hardcoded values are fine. Tests can come later.
 5. **New ideas go to the Parking Lot in TASKS.md.** Do not interrupt the current phase.
 6. **Each phase ends with a DEMO.** A specific, runnable thing you can show. No demo = phase isn't done.
@@ -86,7 +86,7 @@ If you find yourself working on any of these before Phase 1's demo runs, stop:
 
 ## Glossary
 
-- **Agent**: any bot. LLM agent, script, scheduled job. They all look the same to Beacon.
+- **Agent**: any bot. LLM agent, script, scheduled job. They all look the same to Lightsei.
 - **Run**: one invocation of an agent (e.g., one chatbot conversation, one scrape job).
 - **Event**: a single telemetry record, always tied to a run_id.
 - **Manifest**: declared identity and capabilities of an agent (advanced; spine doesn't need it).
@@ -101,7 +101,7 @@ Phase 2.1 asked: OPA or custom Python?
 - Phase 2 ships exactly one rule (daily cost cap). Phases 3 and 4 add zero new policies. We won't see 5+ rules for a while.
 - Reference projects all built their gates as plain code: Sentry rules, Helicone rate limits, PostHog feature flags. None of them reach for OPA at this stage.
 - OPA adds a sidecar container, the Rego language, and a network hop on every gate. The 10ms budget for layer-2 (per MEMORY.md "Five guardrail layers") is tight enough that I want to avoid that round trip until we have a reason to pay it.
-- Decision logs are already free: every gate emits a Beacon event.
+- Decision logs are already free: every gate emits a Lightsei event.
 
 **Switch trigger.** Reopen this decision when ANY of these is true:
 - We have ~5 rules in `backend/policies/` and the file is starting to feel like a DSL we invented.

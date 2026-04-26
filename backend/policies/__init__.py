@@ -1,4 +1,4 @@
-"""Beacon policy engine (custom Python — see MEMORY.md "Policy engine decision").
+"""Lightsei policy engine (custom Python — see MEMORY.md "Policy engine decision").
 
 Each rule is a pure function that returns either:
 - None: rule is silent / not applicable

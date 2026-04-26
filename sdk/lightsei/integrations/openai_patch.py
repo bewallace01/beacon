@@ -1,7 +1,7 @@
 """OpenAI auto-instrumentation.
 
 Patches `openai.resources.chat.completions.Completions.create` and the async
-equivalent. Idempotent: marks each class with `_beacon_patched = True` so a
+equivalent. Idempotent: marks each class with `_lightsei_patched = True` so a
 second call is a no-op. Skips silently if `openai` is not installed.
 
 Streaming (`stream=True`) is deferred to a later phase: those calls pass
@@ -15,12 +15,12 @@ from typing import Any
 
 from .._client import _client
 from .._context import get_run_id
-from ..errors import BeaconPolicyError
+from ..errors import LightseiPolicyError
 from ._streamtap import _AsyncStreamTap, _SyncStreamTap
 
-logger = logging.getLogger("beacon.openai")
+logger = logging.getLogger("lightsei.openai")
 
-_PATCH_MARKER = "_beacon_patched"
+_PATCH_MARKER = "_lightsei_patched"
 _ACTION = "openai.chat.completions.create"
 
 
@@ -107,7 +107,7 @@ def _check_policy_or_raise(req: dict[str, Any]) -> None:
         reason = decision.get("reason", "policy denied")
         # Record the denial as an event so it shows up in the dashboard.
         _client.emit("policy_denied", {"action": _ACTION, **decision})
-        raise BeaconPolicyError(reason, decision)
+        raise LightseiPolicyError(reason, decision)
 
 
 def _instrumented_call(original, self, args, kwargs):

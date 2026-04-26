@@ -95,7 +95,7 @@ def _serialize_workspace(w: Workspace) -> dict[str, Any]:
     }
 
 
-app = FastAPI(title="Beacon Backend", version="0.4.3")
+app = FastAPI(title="Lightsei Backend", version="0.5.0")
 
 app.add_middleware(
     CORSMiddleware,

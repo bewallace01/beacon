@@ -3,7 +3,7 @@ what the user sees. Each chunk is forwarded as-is; `on_chunk` is invoked for
 side-effect bookkeeping and `on_finish` is invoked exactly once when the
 stream is exhausted, closed, or its context manager exits.
 
-Exceptions inside `on_chunk` and `on_finish` are swallowed to honor Beacon's
+Exceptions inside `on_chunk` and `on_finish` are swallowed to honor Lightsei's
 graceful-degradation rule.
 """
 

@@ -34,7 +34,7 @@ export default function Header() {
   return (
     <header className="flex items-center justify-between mb-6">
       <Link href="/" className="text-2xl font-semibold no-underline text-gray-900">
-        Beacon
+        Lightsei
       </Link>
       <div className="flex items-center gap-4 text-sm">
         {user ? (

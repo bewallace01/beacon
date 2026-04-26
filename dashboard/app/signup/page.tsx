@@ -62,7 +62,7 @@ export default function SignupPage() {
         </div>
         <pre className="mt-6 text-xs bg-gray-50 border border-gray-200 rounded p-3 overflow-x-auto">
 {`pip install -e ./sdk openai
-export BEACON_API_KEY="${done.apiKey}"
+export LIGHTSEI_API_KEY="${done.apiKey}"
 python examples/demo_bot.py`}
         </pre>
         <button

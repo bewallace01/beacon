@@ -1,12 +1,12 @@
-"""Beacon Python SDK.
+"""Lightsei Python SDK.
 
 Public surface:
-    beacon.init(api_key, agent_name, version)
-    @beacon.track
-    beacon.emit(kind, payload)
-    beacon.flush()
-    beacon.shutdown()
-    beacon.get_run_id()
+    lightsei.init(api_key, agent_name, version)
+    @lightsei.track
+    lightsei.emit(kind, payload)
+    lightsei.flush()
+    lightsei.shutdown()
+    lightsei.get_run_id()
 """
 
 import logging
@@ -15,9 +15,9 @@ from typing import Any, Optional
 from ._client import _client
 from ._context import get_run_id
 from ._track import track
-from .errors import BeaconError, BeaconPolicyError
+from .errors import LightseiError, LightseiPolicyError
 
-_log = logging.getLogger("beacon")
+_log = logging.getLogger("lightsei")
 
 __all__ = [
     "init",
@@ -27,8 +27,8 @@ __all__ = [
     "shutdown",
     "check_policy",
     "get_run_id",
-    "BeaconError",
-    "BeaconPolicyError",
+    "LightseiError",
+    "LightseiPolicyError",
 ]
 
 
@@ -43,7 +43,7 @@ def init(
     timeout: Optional[float] = None,
     max_retries: Optional[int] = None,
 ) -> None:
-    """Initialize Beacon. Idempotent: a second call is ignored."""
+    """Initialize Lightsei. Idempotent: a second call is ignored."""
     _client.init(
         api_key=api_key,
         agent_name=agent_name,
@@ -62,12 +62,12 @@ def _auto_patch() -> None:
         from .integrations.openai_patch import patch_openai
         patch_openai()
     except Exception as e:
-        _log.warning("beacon openai auto-patch failed: %s", e)
+        _log.warning("lightsei openai auto-patch failed: %s", e)
     try:
         from .integrations.anthropic_patch import patch_anthropic
         patch_anthropic()
     except Exception as e:
-        _log.warning("beacon anthropic auto-patch failed: %s", e)
+        _log.warning("lightsei anthropic auto-patch failed: %s", e)
 
 
 def emit(

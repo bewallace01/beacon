@@ -1,4 +1,4 @@
-"""SQLAlchemy declarative models for Beacon's Postgres schema."""
+"""SQLAlchemy declarative models for Lightsei's Postgres schema."""
 from datetime import datetime
 from typing import Any, Optional
 
