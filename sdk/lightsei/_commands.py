@@ -25,26 +25,43 @@ logger = logging.getLogger("lightsei.commands")
 
 # kind -> callable(payload: dict) -> dict | None
 _handlers: Dict[str, Callable[[dict[str, Any]], Optional[dict[str, Any]]]] = {}
+# kind -> human-readable description (for the dashboard's manifest)
+_descriptions: Dict[str, str] = {}
 
 
-def on_command(kind: str):
+def on_command(kind: str, *, description: Optional[str] = None):
     """Decorator: register a handler for a command kind.
 
     The handler receives the command's payload dict. Its return value (must
     be a dict or None) becomes the command's result. If the handler raises,
     the command is marked failed with the exception's repr.
+
+    `description` is optional but recommended — it's published to the
+    dashboard's send-command dropdown so anyone clicking around can see what
+    each kind does without reading source.
     """
     def decorator(fn: Callable[[dict[str, Any]], Optional[dict[str, Any]]]):
         _handlers[kind] = fn
+        if description:
+            _descriptions[kind] = description
         return fn
     return decorator
 
 
 # Built-in: a simple ping/pong so the dashboard's "send command" form is
 # useful out of the box, even before the user writes any handlers.
-@on_command("ping")
+@on_command("ping", description="Health check. Echoes the payload back with pong=true.")
 def _handle_ping(payload: dict[str, Any]) -> dict[str, Any]:
     return {"pong": True, "echo": payload}
+
+
+def manifest() -> list[dict[str, Any]]:
+    """List of registered command handlers, suitable for posting to the
+    backend at /agents/{name}/manifest."""
+    return [
+        {"kind": k, "description": _descriptions.get(k)}
+        for k in _handlers
+    ]
 
 
 class _Poller:

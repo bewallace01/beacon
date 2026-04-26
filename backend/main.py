@@ -92,6 +92,10 @@ class CommandCompleteIn(BaseModel):
     error: Optional[str] = None
 
 
+class AgentManifestIn(BaseModel):
+    command_handlers: list[dict[str, Any]] = Field(default_factory=list)
+
+
 def _serialize_api_key(k: ApiKey) -> dict[str, Any]:
     return {
         "id": k.id,
@@ -717,6 +721,51 @@ def cancel_command(
     cmd.completed_at = utcnow()
     session.flush()
     return _serialize_command(cmd)
+
+
+def _serialize_manifest(a: Agent) -> dict[str, Any]:
+    return {
+        "agent_name": a.name,
+        "command_handlers": a.command_handlers or [],
+        "last_seen_at": a.last_seen_at.isoformat() if a.last_seen_at else None,
+    }
+
+
+@app.put("/agents/{agent_name}/manifest")
+def put_manifest(
+    agent_name: str,
+    body: AgentManifestIn,
+    session: Session = Depends(get_session),
+    workspace_id: str = Depends(get_workspace_id),
+) -> dict[str, Any]:
+    """Replace an agent's command-handler manifest. Called by the SDK on
+    init() once handlers are known. Also bumps last_seen_at."""
+    now = utcnow()
+    ensure_agent(session, workspace_id, agent_name, now)
+    a = session.get(Agent, (workspace_id, agent_name))
+    if a is None:
+        raise HTTPException(status_code=500, detail="agent ensure failed")
+    a.command_handlers = body.command_handlers
+    a.last_seen_at = now
+    a.updated_at = now
+    session.flush()
+    return _serialize_manifest(a)
+
+
+@app.get("/agents/{agent_name}/manifest")
+def get_manifest(
+    agent_name: str,
+    session: Session = Depends(get_session),
+    workspace_id: str = Depends(get_workspace_id),
+) -> dict[str, Any]:
+    a = session.get(Agent, (workspace_id, agent_name))
+    if a is None:
+        return {
+            "agent_name": agent_name,
+            "command_handlers": [],
+            "last_seen_at": None,
+        }
+    return _serialize_manifest(a)
 
 
 @app.get("/agents/{agent_name}/cost")

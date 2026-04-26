@@ -371,3 +371,20 @@ export async function cancelCommand(commandId: string): Promise<Command> {
     method: "DELETE",
   })) as Command;
 }
+
+export type CommandHandler = {
+  kind: string;
+  description: string | null;
+};
+
+export type AgentManifest = {
+  agent_name: string;
+  command_handlers: CommandHandler[];
+  last_seen_at: string | null;
+};
+
+export async function fetchAgentManifest(agentName: string): Promise<AgentManifest> {
+  return (await authedJson(
+    `/agents/${encodeURIComponent(agentName)}/manifest`,
+  )) as AgentManifest;
+}

@@ -4,9 +4,11 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 import {
+  AgentManifest,
   cancelCommand,
   Command,
   enqueueCommand,
+  fetchAgentManifest,
   fetchCommands,
   UnauthorizedError,
 } from "../../api";
@@ -40,15 +42,21 @@ export default function AgentPage({ params }: { params: { name: string } }) {
   const agentName = decodeURIComponent(params.name);
   const router = useRouter();
   const [commands, setCommands] = useState<Command[]>([]);
+  const [manifest, setManifest] = useState<AgentManifest | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [kind, setKind] = useState("ping");
+  const [kindCustom, setKindCustom] = useState(false);
   const [payloadText, setPayloadText] = useState("{}");
   const [busy, setBusy] = useState(false);
 
   const load = async () => {
     try {
-      const cmds = await fetchCommands(agentName);
+      const [cmds, mf] = await Promise.all([
+        fetchCommands(agentName),
+        fetchAgentManifest(agentName),
+      ]);
       setCommands(cmds);
+      setManifest(mf);
       setError(null);
     } catch (e) {
       if (e instanceof UnauthorizedError) {
@@ -121,9 +129,34 @@ export default function AgentPage({ params }: { params: { name: string } }) {
         ← runs
       </Link>
 
-      <h1 className="text-2xl font-semibold tracking-tight">
-        <span className="font-mono">{agentName}</span>
-      </h1>
+      <div className="flex items-baseline gap-3">
+        <h1 className="text-2xl font-semibold tracking-tight">
+          <span className="font-mono">{agentName}</span>
+        </h1>
+        {(() => {
+          const lastSeen = manifest?.last_seen_at
+            ? new Date(manifest.last_seen_at).getTime()
+            : null;
+          if (lastSeen === null) return null;
+          // Heuristic: a bot "checked in" via manifest at init OR via a poll.
+          // Without per-poll heartbeats we just show when it last checked in.
+          const ageSec = (Date.now() - lastSeen) / 1000;
+          const live = ageSec < 60;
+          return (
+            <span
+              className={
+                "inline-block px-2 py-0.5 rounded-full text-[11px] font-medium " +
+                (live
+                  ? "bg-green-100 text-green-800"
+                  : "bg-gray-100 text-gray-700")
+              }
+              title={`last seen ${manifest!.last_seen_at}`}
+            >
+              {live ? "live" : "idle"}
+            </span>
+          );
+        })()}
+      </div>
       <p className="text-sm text-gray-500 mt-1 mb-8">
         Send commands to this agent. The bot polls every few seconds and runs
         a registered <code className="font-mono">@lightsei.on_command</code>{" "}
@@ -140,40 +173,96 @@ export default function AgentPage({ params }: { params: { name: string } }) {
         <h2 className="text-[11px] font-semibold text-gray-500 mb-4 uppercase tracking-wider">
           Send command
         </h2>
-        <form onSubmit={onSubmit} className="space-y-3">
-          <div className="grid grid-cols-3 gap-3">
-            <div className="col-span-1">
-              <label className="block text-sm font-medium text-gray-700 mb-1.5">
-                Kind
-              </label>
-              <input
-                value={kind}
-                onChange={(e) => setKind(e.target.value)}
-                required
-                placeholder="ping"
-                className="w-full border border-gray-300 rounded-md px-3 py-2 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-accent-500/30 focus:border-accent-500"
-              />
-            </div>
-            <div className="col-span-2">
-              <label className="block text-sm font-medium text-gray-700 mb-1.5">
-                Payload (JSON object)
-              </label>
-              <input
-                value={payloadText}
-                onChange={(e) => setPayloadText(e.target.value)}
-                placeholder="{}"
-                className="w-full border border-gray-300 rounded-md px-3 py-2 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-accent-500/30 focus:border-accent-500"
-              />
-            </div>
-          </div>
-          <button
-            type="submit"
-            disabled={busy || !kind.trim()}
-            className="px-4 py-2 bg-accent-600 hover:bg-accent-700 text-white rounded-md text-sm font-medium disabled:opacity-50 transition-colors"
-          >
-            {busy ? "sending…" : "send"}
-          </button>
-        </form>
+        {(() => {
+          const handlers = manifest?.command_handlers ?? [];
+          const selected = handlers.find((h) => h.kind === kind);
+          return (
+            <form onSubmit={onSubmit} className="space-y-3">
+              <div className="grid grid-cols-3 gap-3">
+                <div className="col-span-1">
+                  <label className="block text-sm font-medium text-gray-700 mb-1.5">
+                    Kind
+                  </label>
+                  {kindCustom || handlers.length === 0 ? (
+                    <input
+                      value={kind}
+                      onChange={(e) => setKind(e.target.value)}
+                      required
+                      placeholder="ping"
+                      className="w-full border border-gray-300 rounded-md px-3 py-2 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-accent-500/30 focus:border-accent-500"
+                    />
+                  ) : (
+                    <select
+                      value={kind}
+                      onChange={(e) => {
+                        const v = e.target.value;
+                        if (v === "__custom__") {
+                          setKindCustom(true);
+                          setKind("");
+                        } else {
+                          setKind(v);
+                        }
+                      }}
+                      className="w-full border border-gray-300 rounded-md px-3 py-2 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-accent-500/30 focus:border-accent-500 bg-white"
+                    >
+                      {handlers.map((h) => (
+                        <option key={h.kind} value={h.kind}>
+                          {h.kind}
+                        </option>
+                      ))}
+                      <option value="__custom__">other (custom)…</option>
+                    </select>
+                  )}
+                </div>
+                <div className="col-span-2">
+                  <label className="block text-sm font-medium text-gray-700 mb-1.5">
+                    Payload (JSON object)
+                  </label>
+                  <input
+                    value={payloadText}
+                    onChange={(e) => setPayloadText(e.target.value)}
+                    placeholder="{}"
+                    className="w-full border border-gray-300 rounded-md px-3 py-2 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-accent-500/30 focus:border-accent-500"
+                  />
+                </div>
+              </div>
+              {selected?.description && (
+                <div className="text-xs text-gray-500">
+                  {selected.description}
+                </div>
+              )}
+              {handlers.length === 0 && (
+                <div className="text-xs text-gray-500">
+                  No registered handlers for this agent yet. Anything you send
+                  queues until a bot with a matching{" "}
+                  <code className="font-mono">@lightsei.on_command</code>{" "}
+                  starts up.
+                </div>
+              )}
+              <div className="flex items-center gap-3">
+                <button
+                  type="submit"
+                  disabled={busy || !kind.trim()}
+                  className="px-4 py-2 bg-accent-600 hover:bg-accent-700 text-white rounded-md text-sm font-medium disabled:opacity-50 transition-colors"
+                >
+                  {busy ? "sending…" : "send"}
+                </button>
+                {kindCustom && handlers.length > 0 && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setKindCustom(false);
+                      setKind(handlers[0].kind);
+                    }}
+                    className="text-xs text-gray-500 hover:text-accent-600"
+                  >
+                    ← pick from registered handlers
+                  </button>
+                )}
+              </div>
+            </form>
+          );
+        })()}
       </section>
 
       <section className="mb-10">

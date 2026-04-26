@@ -103,8 +103,18 @@ class _Client:
             # Optional: start the command poller if any handlers are registered
             # AND we have an agent_name to scope by.
             try:
-                from ._commands import _Poller, has_handlers
+                from ._commands import _Poller, has_handlers, manifest
                 if has_handlers() and self.agent_name:
+                    # Publish the handler manifest so the dashboard can show a
+                    # dropdown of valid kinds. Best-effort.
+                    try:
+                        self._http.put(
+                            f"/agents/{self.agent_name}/manifest",
+                            json={"command_handlers": manifest()},
+                            timeout=self.timeout,
+                        )
+                    except Exception as e:
+                        logger.warning("lightsei manifest publish failed: %s", e)
                     self._command_poller = _Poller(self, self.command_poll_interval)
                     self._command_poller.start()
             except Exception as e:  # pragma: no cover
