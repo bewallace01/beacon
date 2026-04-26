@@ -16,6 +16,7 @@ _DEFAULT_BATCH_SIZE = 100
 _DEFAULT_TIMEOUT = 5.0
 _DEFAULT_MAX_RETRIES = 3
 _MAX_QUEUE_SIZE = 10_000
+_DEFAULT_CAPTURE_CONTENT = True
 
 
 class _Client:
@@ -30,6 +31,7 @@ class _Client:
         self.batch_size: int = _DEFAULT_BATCH_SIZE
         self.timeout: float = _DEFAULT_TIMEOUT
         self.max_retries: int = _DEFAULT_MAX_RETRIES
+        self.capture_content: bool = _DEFAULT_CAPTURE_CONTENT
         self._queue: queue.Queue = queue.Queue(maxsize=_MAX_QUEUE_SIZE)
         self._http: Optional[httpx.Client] = None
         self._stop_event = threading.Event()
@@ -49,6 +51,7 @@ class _Client:
         batch_size: Optional[int] = None,
         timeout: Optional[float] = None,
         max_retries: Optional[int] = None,
+        capture_content: Optional[bool] = None,
     ) -> None:
         with self._lock:
             if self._initialized:
@@ -67,6 +70,8 @@ class _Client:
                 self.timeout = timeout
             if max_retries is not None:
                 self.max_retries = max_retries
+            if capture_content is not None:
+                self.capture_content = capture_content
 
             headers = {"content-type": "application/json"}
             if self.api_key:
@@ -254,6 +259,7 @@ class _Client:
             self.batch_size = _DEFAULT_BATCH_SIZE
             self.timeout = _DEFAULT_TIMEOUT
             self.max_retries = _DEFAULT_MAX_RETRIES
+            self.capture_content = _DEFAULT_CAPTURE_CONTENT
             self._queue = queue.Queue(maxsize=_MAX_QUEUE_SIZE)
             self._http = None
             self._stop_event = threading.Event()

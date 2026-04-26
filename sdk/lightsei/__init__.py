@@ -42,8 +42,13 @@ def init(
     batch_size: Optional[int] = None,
     timeout: Optional[float] = None,
     max_retries: Optional[int] = None,
+    capture_content: Optional[bool] = None,
 ) -> None:
-    """Initialize Lightsei. Idempotent: a second call is ignored."""
+    """Initialize Lightsei. Idempotent: a second call is ignored.
+
+    Set capture_content=False to opt out of recording the messages and
+    response text in events. Token counts and metadata are still captured.
+    """
     _client.init(
         api_key=api_key,
         agent_name=agent_name,
@@ -53,6 +58,7 @@ def init(
         batch_size=batch_size,
         timeout=timeout,
         max_retries=max_retries,
+        capture_content=capture_content,
     )
     _auto_patch()
 

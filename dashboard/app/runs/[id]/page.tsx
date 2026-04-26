@@ -14,6 +14,66 @@ function fmtTime(iso: string): string {
   }
 }
 
+type Message = { role?: string; content?: string | unknown };
+
+type Turn = {
+  model?: string;
+  request: Message[];
+  response?: string;
+};
+
+function buildConversation(events: Event[]): Turn[] {
+  const turns: Turn[] = [];
+  let current: Turn | null = null;
+  for (const e of events) {
+    const p = (e.payload || {}) as Record<string, unknown>;
+    if (e.kind === "llm_call_started") {
+      const reqMsgs = p.request_messages as Message[] | undefined;
+      current = {
+        model: (p.model as string | undefined) ?? undefined,
+        request: Array.isArray(reqMsgs) ? reqMsgs : [],
+      };
+      turns.push(current);
+    } else if (e.kind === "llm_call_completed" && current) {
+      if (!current.model && p.model) current.model = p.model as string;
+      if (typeof p.response_content === "string") {
+        current.response = p.response_content;
+      }
+      current = null;
+    } else if (e.kind === "llm_call_failed" && current) {
+      current = null;
+    }
+  }
+  return turns;
+}
+
+function bubbleColors(role: string | undefined): string {
+  switch (role) {
+    case "system":
+      return "bg-gray-100 border-gray-200 text-gray-800";
+    case "user":
+      return "bg-blue-50 border-blue-200 text-blue-900";
+    case "assistant":
+      return "bg-green-50 border-green-200 text-green-900";
+    case "tool":
+      return "bg-purple-50 border-purple-200 text-purple-900";
+    default:
+      return "bg-gray-50 border-gray-200 text-gray-700";
+  }
+}
+
+function messageText(m: Message): string {
+  if (typeof m.content === "string") return m.content;
+  // Anthropic-style content blocks; flatten any text parts
+  if (Array.isArray(m.content)) {
+    return (m.content as Array<{ type?: string; text?: string }>)
+      .filter((b) => b.type === "text" && typeof b.text === "string")
+      .map((b) => b.text)
+      .join("");
+  }
+  return JSON.stringify(m.content ?? "");
+}
+
 export default function RunDetail({ params }: { params: { id: string } }) {
   const runId = params.id;
   const router = useRouter();
@@ -120,6 +180,63 @@ export default function RunDetail({ params }: { params: { id: string } }) {
                 )}
             </div>
           </div>
+        );
+      })()}
+
+      {(() => {
+        const turns = buildConversation(events);
+        const hasContent = turns.some(
+          (t) => t.request.length > 0 || t.response !== undefined,
+        );
+        if (!hasContent) return null;
+        return (
+          <section className="mb-8">
+            <h2 className="text-sm font-semibold text-gray-700 mb-3 uppercase tracking-wide">
+              Conversation
+            </h2>
+            <div className="space-y-6">
+              {turns.map((t, i) => (
+                <div key={i} className="space-y-2">
+                  <div className="text-xs text-gray-500">
+                    call {i + 1}
+                    {t.model && (
+                      <>
+                        {" · "}
+                        <span className="font-mono">{t.model}</span>
+                      </>
+                    )}
+                  </div>
+                  {t.request.map((m, j) => (
+                    <div
+                      key={`req-${j}`}
+                      className={
+                        "p-3 border rounded text-sm whitespace-pre-wrap break-words " +
+                        bubbleColors(m.role)
+                      }
+                    >
+                      <div className="text-xs uppercase tracking-wide opacity-70 mb-1">
+                        {m.role ?? "?"}
+                      </div>
+                      {messageText(m)}
+                    </div>
+                  ))}
+                  {t.response !== undefined && (
+                    <div
+                      className={
+                        "p-3 border rounded text-sm whitespace-pre-wrap break-words " +
+                        bubbleColors("assistant")
+                      }
+                    >
+                      <div className="text-xs uppercase tracking-wide opacity-70 mb-1">
+                        assistant
+                      </div>
+                      {t.response}
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+          </section>
         );
       })()}
 

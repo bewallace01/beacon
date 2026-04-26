@@ -83,10 +83,15 @@ def _patch_async(cls: type) -> None:
 def _summarize_request(kwargs: dict[str, Any]) -> dict[str, Any]:
     messages = kwargs.get("messages")
     msg_count = len(messages) if isinstance(messages, list) else None
-    return {
+    out: dict[str, Any] = {
         "model": kwargs.get("model"),
         "message_count": msg_count,
     }
+    if _client.capture_content and isinstance(messages, list):
+        out["request_messages"] = [
+            dict(m) if isinstance(m, dict) else m for m in messages
+        ]
+    return out
 
 
 def _summarize_response(resp: Any) -> dict[str, Any]:
@@ -107,6 +112,20 @@ def _summarize_response(resp: Any) -> dict[str, Any]:
             out["total_tokens"] = in_t + out_t
     except Exception:
         pass
+    if _client.capture_content:
+        try:
+            content_blocks = getattr(resp, "content", None) or []
+            parts: list[str] = []
+            for b in content_blocks:
+                btype = getattr(b, "type", None)
+                if btype == "text":
+                    txt = getattr(b, "text", None)
+                    if txt:
+                        parts.append(txt)
+            if parts:
+                out["response_content"] = "".join(parts)
+        except Exception:
+            pass
     return out
 
 
@@ -175,6 +194,7 @@ def _make_stream_observers(req, started, run_id, is_implicit):
         "input_tokens": None,
         "output_tokens": None,
         "output_chunks": 0,
+        "content_parts": [],
     }
 
     def on_chunk(event: Any) -> None:
@@ -202,6 +222,12 @@ def _make_stream_observers(req, started, run_id, is_implicit):
                         state["output_tokens"] = out_t
             elif etype == "content_block_delta":
                 state["output_chunks"] += 1
+                if _client.capture_content:
+                    delta = getattr(event, "delta", None)
+                    if delta is not None and getattr(delta, "type", None) == "text_delta":
+                        text = getattr(delta, "text", None)
+                        if text:
+                            state["content_parts"].append(text)
         except Exception:
             pass
 
@@ -217,6 +243,8 @@ def _make_stream_observers(req, started, run_id, is_implicit):
             payload["input_tokens"] = state["input_tokens"]
         if state["output_tokens"] is not None:
             payload["output_tokens"] = state["output_tokens"]
+        if _client.capture_content and state["content_parts"]:
+            payload["response_content"] = "".join(state["content_parts"])
         _client.emit("llm_call_completed", payload, run_id=run_id)
         close_implicit_run(run_id, is_implicit, _STREAM_LABEL)
 
