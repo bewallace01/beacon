@@ -4,7 +4,7 @@ Read MEMORY.md first if it's been a while. (Older Done Log entries call the proj
 
 ## NOW
 
-> **Phase 6.2: Plan event schema + emit + change detection**
+> **Phase 6.3: Backend latest-plan endpoint**
 
 Phase 5 shipped 2026-04-26: PaaS-for-agents end-to-end. See "Runtime decision (2026-04-27)" in MEMORY.md for the architecture call (single-host worker now, managed runtime in 5B). Phase 6 dogfoods Phase 5: Polaris is itself a Lightsei bot deployed via the PaaS we just built.
 
@@ -117,25 +117,9 @@ Phase 5A scope: single-host worker, in-process subprocess per bot, only safe for
 
 ### 6.1 Polaris bot scaffold ✅ done 2026-04-27 (see Done Log)
 
-### 6.2 Plan event schema + emit + change detection (NOW)
+### 6.2 Plan event schema + emit + change detection ✅ done 2026-04-27 (see Done Log)
 
-- Define payload schema for `polaris.plan` events:
-  ```
-  {
-    "summary": str,                          // 1-2 sentence state of the project
-    "next_actions": [{task, why, blocked_by}],  // 3-5 specific, actionable items
-    "parking_lot_promotions": [{item, why}],     // items ready to promote
-    "drift": [{between, observation}],           // contradictions between MEMORY/TASKS/code
-    "doc_hashes": {"memory_md": sha, "tasks_md": sha},
-    "model": str,
-    "tokens_in": int,
-    "tokens_out": int,
-  }
-  ```
-- Hash MEMORY.md + TASKS.md before each tick. If both unchanged since last `polaris.plan`, skip the LLM call and emit a lightweight `polaris.tick_skipped` event so the dashboard can show "no docs change since 11:23 PM, didn't burn tokens."
-- Use `lightsei.emit()` so the event lands on the active run and gets ingested through the existing pipeline.
-
-### 6.3 Backend: latest-plan endpoint
+### 6.3 Backend: latest-plan endpoint (NOW)
 
 - `GET /workspaces/me/agents/{name}/latest-plan` — returns the most recent `polaris.plan` event payload for any run of that agent. Workspace-scoped, 404 if no plan exists yet.
 - No new tables; reuse the `events` table with kind `polaris.plan`.
@@ -201,6 +185,18 @@ Ideas that are good but not now. Add freely. Do not work on these until their ph
 ## Done Log
 
 Move tasks here as they finish. Look at this when momentum dips.
+
+### 2026-04-27 — Phase 6.2 Plan event schema + emit + change detection
+- [x] **Schema for `polaris.plan` events** (carried in the event payload, not a DB column — `events.payload` is JSONB):
+  - Always present: `text` (raw Claude response), `doc_hashes`, `model`, `tokens_in`, `tokens_out`.
+  - Present on successful parse: `summary`, `next_actions[{task, why, blocked_by}]`, `parking_lot_promotions[{item, why}]`, `drift[{between, observation}]`.
+  - Present on parse failure: `parse_error` (string explaining what went wrong); structured fields are absent so the dashboard can render "raw text only, parse failed."
+- [x] **Tolerant JSON parser** (`_parse_plan` in `polaris/bot.py`). Strips a leading ` ```json ` fence + trailing ` ``` ` if Claude added one despite being told not to (common failure mode at low temperature). Returns `(parsed, parse_error)` with exactly one non-None — no exceptions thrown to the caller.
+- [x] **Change detection via in-process `_last_hashes`**. First tick after bot start always proceeds (LLM call or dry-run emit). On every successful emit (`polaris.plan` with a clean parse, or `polaris.tick_dry_run`), the bot caches the docs' hashes. Subsequent ticks compare; if hashes match, the bot emits a tiny `polaris.tick_skipped` event with `reason: "docs unchanged"` and skips the LLM call. Choice: in-process state, not a backend lookup. Trade-off — a redeploy resets it and re-calls Claude on first tick even on identical docs. That's intentional: redeploys should confirm the new bundle's prompt still produces good output. Cross-deploy hash sharing can be added later by reading the latest plan event from the backend on bot start, at the cost of a startup query (and a Phase 6.3 endpoint to call).
+- [x] **Parse-failure retry semantics**. `_last_hashes` is updated only on a clean parse. If Claude returns malformed JSON, the next tick will re-call Claude rather than silently waiting for the docs to change. Temperature 0.2 is non-deterministic enough that a parse failure can self-resolve.
+- [x] **System prompt updated** to specify the JSON output shape (`polaris/system_prompt.md`). Still flagged as the 6.2 placeholder; real iteration lands in 6.5.
+- Verified end-to-end against prod with `POLARIS_DRY_RUN=1 POLARIS_POLL_S=4`: tick 1 emitted `polaris.tick_dry_run` and set `_last_hashes`; ticks 2 + 3 emitted `polaris.tick_skipped` with `{reason: "docs unchanged", hashes: {tasks_md: f4989e78…, memory_md: 74a298e8…}}`. Confirmed via `/runs/{id}/events` on each of the three runs that the kind sequence was `run_started → polaris.tick_skipped|tick_dry_run → run_ended`.
+- Verified parse path with 5 cases (clean JSON, fenced JSON, malformed text, top-level array, partial fields). All pass. The full `polaris.plan` end-to-end emission isn't exercised here because we don't have an Anthropic key in this shell; the Phase 6.6 demo will close that loop. Component-by-component, each piece — `_call_claude` (same shape as the Phase 5 demo bot's verified Anthropic calls), `_parse_plan` (5 unit cases), `lightsei.emit` (verified by the dry-run path) — is exercised.
 
 ### 2026-04-27 — Phase 6.1 Polaris bot scaffold
 - [x] New `polaris/` at repo root with `bot.py`, `system_prompt.md` (placeholder, real version in 6.5), `requirements.txt`, and a bundled `lightsei-0.0.1-py3-none-any.whl` (rebuilt from `./sdk` per deploy, same pattern Phase 5's demo bundle used).

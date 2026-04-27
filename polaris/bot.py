@@ -1,16 +1,22 @@
 """Polaris — project orchestrator bot.
 
 Reads a project's MEMORY.md and TASKS.md from the bundle root on every
-tick, calls Claude with the orchestrator system prompt, and emits the
-generated plan as a Lightsei event so the dashboard can render it.
+tick, calls Claude with the orchestrator system prompt, parses the
+structured plan, and emits it as a `polaris.plan` event so the
+dashboard can render it.
 
 Phase 6A scope: read-only. No PRs, no command dispatch. Polaris produces
 visible recommendations only. See TASKS.md "Phase 6" for the demo
 criterion and the 6B+ roadmap.
 
-This file is the 6.1 scaffold: the loop, the doc-reading, and the
-Anthropic call shape. The structured `polaris.plan` schema + hash-skip
-logic land in 6.2; the real orchestrator system prompt lands in 6.5.
+Phase 6.2 added structured-plan schema + hash-skip change detection:
+the bot remembers the last successfully-emitted doc hashes in process
+memory and skips the LLM call when both files are byte-identical. A
+fresh deploy resets that state, so re-deploying always regenerates a
+plan even on unchanged docs (intentional — confirms the new bundle's
+prompt still produces good output).
+
+Real orchestrator prompt iteration lands in 6.5.
 
 Env (defaults in parens):
   POLARIS_POLL_S     seconds between ticks (3600)
@@ -24,11 +30,13 @@ Workspace secrets (injected by the worker):
 """
 
 import hashlib
+import json
 import os
 import sys
 import time
 import traceback
 from pathlib import Path
+from typing import Optional
 
 import lightsei
 
@@ -38,6 +46,10 @@ MODEL = os.environ.get("POLARIS_MODEL", "claude-opus-4-7")
 DOCS_DIR = Path(os.environ.get("POLARIS_DOCS_DIR", "."))
 DRY_RUN = os.environ.get("POLARIS_DRY_RUN") == "1"
 SYSTEM_PROMPT_PATH = Path(__file__).parent / "system_prompt.md"
+
+# In-process change-detection state. Reset on every bot restart, so a
+# redeploy always regenerates a plan against the current docs.
+_last_hashes: Optional[dict] = None
 
 
 def _read_docs() -> dict:
@@ -77,8 +89,36 @@ def _call_claude(system_prompt: str, docs: dict) -> dict:
     }
 
 
+def _parse_plan(text: str) -> tuple[Optional[dict], Optional[str]]:
+    """Parse Claude's JSON response into structured plan fields.
+
+    Returns (parsed, parse_error). Exactly one is None.
+    Tolerates the common case where Claude wraps the JSON in a
+    ```json fence despite being told not to.
+    """
+    candidate = text.strip()
+    if candidate.startswith("```"):
+        # strip leading fence with optional language tag
+        candidate = candidate.split("\n", 1)[1] if "\n" in candidate else ""
+        if candidate.endswith("```"):
+            candidate = candidate[: -len("```")].rstrip()
+    try:
+        data = json.loads(candidate)
+    except json.JSONDecodeError as e:
+        return None, f"json decode: {e}"
+    if not isinstance(data, dict):
+        return None, "top-level value is not a JSON object"
+    return {
+        "summary": data.get("summary"),
+        "next_actions": data.get("next_actions") or [],
+        "parking_lot_promotions": data.get("parking_lot_promotions") or [],
+        "drift": data.get("drift") or [],
+    }, None
+
+
 @lightsei.track
 def tick() -> None:
+    global _last_hashes
     docs = _read_docs()
     print(
         f"docs: memory={docs['hashes']['memory_md']} "
@@ -86,28 +126,51 @@ def tick() -> None:
         flush=True,
     )
 
+    if _last_hashes == docs["hashes"]:
+        print("docs unchanged since last plan, skipping LLM call", flush=True)
+        lightsei.emit(
+            "polaris.tick_skipped",
+            {"reason": "docs unchanged", "hashes": docs["hashes"]},
+        )
+        return
+
     if DRY_RUN:
         print("dry run: skipping Anthropic call", flush=True)
         lightsei.emit("polaris.tick_dry_run", {"hashes": docs["hashes"]})
+        _last_hashes = docs["hashes"]
         return
 
     system_prompt = SYSTEM_PROMPT_PATH.read_text()
     result = _call_claude(system_prompt, docs)
-    print(
-        f"plan generated: {result['tokens_in']} in / "
-        f"{result['tokens_out']} out / {len(result['text'])} chars",
-        flush=True,
-    )
-    lightsei.emit(
-        "polaris.plan_raw",
-        {
-            "text": result["text"],
-            "hashes": docs["hashes"],
-            "model": result["model"],
-            "tokens_in": result["tokens_in"],
-            "tokens_out": result["tokens_out"],
-        },
-    )
+    parsed, parse_error = _parse_plan(result["text"])
+
+    payload = {
+        "text": result["text"],
+        "doc_hashes": docs["hashes"],
+        "model": result["model"],
+        "tokens_in": result["tokens_in"],
+        "tokens_out": result["tokens_out"],
+    }
+    if parsed is not None:
+        payload.update(parsed)
+        print(
+            f"plan: {len(parsed['next_actions'])} actions, "
+            f"{len(parsed['parking_lot_promotions'])} promotions, "
+            f"{len(parsed['drift'])} drift items "
+            f"({result['tokens_in']} in / {result['tokens_out']} out)",
+            flush=True,
+        )
+    else:
+        payload["parse_error"] = parse_error
+        print(f"plan parse failed: {parse_error}", flush=True)
+
+    lightsei.emit("polaris.plan", payload)
+
+    # Update the last-seen hashes only when we got a clean parse, so a
+    # transient parse failure retries on the next tick instead of silently
+    # waiting for the docs to change.
+    if parsed is not None:
+        _last_hashes = docs["hashes"]
 
 
 def main() -> None:
