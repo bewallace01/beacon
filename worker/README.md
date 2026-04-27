@@ -1,95 +1,64 @@
-# worker (Phase A POC)
+# worker
 
-Throwaway exploration for "Lightsei hosts your bot" — see the parking-lot
-discussion in `MEMORY.md` once that phase is committed.
+The Phase 5 runtime: a single-host process that spawns and supervises bots
+on behalf of Lightsei deployments.
 
-## What's here
+## Files
 
-- `run_local.py` — single-file CLI that takes a directory, builds a venv,
-  installs requirements, spawns the bot, streams logs, restarts on crash.
+- `runner.py` — production worker. Polls the backend for queued deployments,
+  builds a venv per deployment, spawns the bot, streams logs back. Runs
+  multiple bots concurrently (one supervisor thread per deployment).
+- `run_local.py` — Phase A POC kept around as a manual debugging tool. Same
+  lifecycle shape as `runner.py` but driven by a local zip + `--env` flags
+  instead of the backend. Useful for testing a bot offline.
 
-That's it. There is intentionally no backend integration, no GitHub fetch,
-no isolation, no log shipping, no secrets injection beyond `--env`.
+Tests for the worker live alongside the backend tests at
+`backend/tests/test_worker_runner.py` so they share the Postgres + TestClient
+fixtures. The worker is added to pytest's pythonpath via
+`backend/pytest.ini`.
 
-## Try it
+## Run the production worker
 
-Take a tiny bot directory:
-
-```
-example-bot/
-  bot.py
-  requirements.txt
-```
-
-`bot.py`:
-
-```python
-import lightsei, time, os
-lightsei.init(api_key=os.environ["LIGHTSEI_API_KEY"], agent_name="poc-bot")
-print("hi from the bot", flush=True)
-while True:
-    time.sleep(10)
+```bash
+export LIGHTSEI_WORKER_TOKEN=...           # match the backend's value
+export LIGHTSEI_BASE_URL=https://api.lightsei.com
+python worker/runner.py
 ```
 
-`requirements.txt`:
+The worker polls every ~5 seconds for queued deployments, claims one
+atomically (Postgres `FOR UPDATE SKIP LOCKED`), and runs it. A stale
+heartbeat from a dead worker (>90s) lets another worker re-claim, so the
+crash-recovery story is built in.
 
-```
-lightsei
-```
+### What the worker injects into the bot subprocess
 
-Run it under the POC:
+- All workspace secrets as env vars (so e.g. `OPENAI_API_KEY` is just there).
+- `LIGHTSEI_AGENT_NAME` pinned to the deployment's agent name.
+- `LIGHTSEI_BASE_URL` inherited from the worker.
 
-```
-python worker/run_local.py ./example-bot \
-    --env LIGHTSEI_API_KEY=bk_... \
-    --env LIGHTSEI_BASE_URL=https://api.lightsei.com
-```
+You should also set a `LIGHTSEI_API_KEY` workspace secret containing one of
+your workspace's api keys; the bot needs it to authenticate (heartbeat its
+SDK identity, send events, call `lightsei.get_secret()`). Auto-minting a
+deployment-scoped key is a follow-up.
 
-You should see:
-- a venv created at `.lightsei-runtime/example-bot/.venv`
-- pip install output
-- the bot's stdout/stderr mirrored to your terminal AND saved to
-  `.lightsei-runtime/logs/example-bot/stdout.log`
-- the bot showing up as a "live" instance in app.lightsei.com
-- Ctrl+C terminates the bot cleanly
+### What the worker does NOT do (yet)
 
-To exercise the restart path: edit your bot to `raise SystemExit(1)` after
-a few seconds and watch the runner back off.
+- **No isolation.** Bots run as the worker's user. This is fine when you're
+  the only user; it is a dealbreaker for accepting other people's code.
+  Phase 5B (Fly Machines / Modal sandboxes) is the cure.
+- **No scratch GC.** Each deployment's venv lives at
+  `/tmp/lightsei-worker/<deployment_id>/` indefinitely. Manual `rm -rf`
+  for now.
+- **No build cache.** Every redeploy rebuilds the venv from scratch
+  (~30-60s for a typical bot). A requirements-hash cache lands in 5B.
+- **No log retention beyond 1000 lines per deployment.** The backend
+  prunes oldest lines on each insert.
 
-## What this proves (and doesn't)
+## Quick spike (no backend needed)
 
-**Proves:** the loop works. A control plane can call this shape — start,
-run, capture, restart, stop — without inventing anything novel. The bot's
-own SDK heartbeat flows through unchanged.
+`run_local.py` is the throwaway tool. Useful when you want to verify a
+specific bot survives the runner lifecycle without going through the
+deploy → claim → run path.
 
-**Doesn't prove:** that the bot is *isolated* (it isn't — it runs as your
-user), that this is *safe for other people's code* (no), that logs scale
-past a single host (no), that secrets injection from the dashboard works
-(not wired). All those are Phase B+ when we replace the in-process Popen
-with Fly Machines / Modal sandboxes.
-
-## What lifts into production
-
-When (if) Phase A ships, the durable pieces are:
-
-1. The "venv per bot, python -u entry, line-buffered stdout, restart with
-   backoff" lifecycle — stays the same shape inside a container.
-2. The split between `runtime_dir` (mutable scratch) and `log_dir` (which
-   gets shipped to the backend).
-3. The env-var-as-config contract: workspace secrets become env vars at
-   spawn time, the bot reads them with `os.environ` or
-   `lightsei.get_secret()`.
-
-What gets replaced:
-
-1. The Popen call becomes `runtime.start(deployment_id)` against a
-   `Runtime` interface with `LocalDockerRuntime` and `FlyMachinesRuntime`
-   implementations.
-2. The log streams get teed to a backend `/deployments/{id}/logs`
-   endpoint instead of a flat file.
-3. The `bot_dir` argument becomes a `source_url` fetched from object
-   storage (R2 / Railway volume), populated by `lightsei deploy` or a
-   GitHub webhook.
-
-If after using this for a day or two the lifecycle still feels right,
-that's the green light to commit to Phase A in the main codebase.
+See the `run_local.py` docstring for the CLI shape; nothing about it
+depends on the deployments table.

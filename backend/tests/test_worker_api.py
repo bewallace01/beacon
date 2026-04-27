@@ -198,7 +198,7 @@ def test_status_unknown_deployment_404(client):
 
 # ---------- heartbeat ----------
 
-def test_heartbeat_advances(client, alice):
+def test_heartbeat_advances_and_returns_deployment(client, alice):
     h = auth_headers(alice["session_token"])
     dep = _upload(client, h, "x")
     client.post(
@@ -207,11 +207,15 @@ def test_heartbeat_advances(client, alice):
 
     r1 = client.get(f"/workspaces/me/deployments/{dep['id']}", headers=h).json()
     import time; time.sleep(0.05)
-    client.post(
+    r = client.post(
         f"/worker/deployments/{dep['id']}/heartbeat", headers=WORKER_HEADERS,
     )
-    r2 = client.get(f"/workspaces/me/deployments/{dep['id']}", headers=h).json()
-    assert r2["heartbeat_at"] > r1["heartbeat_at"]
+    assert r.status_code == 200
+    body = r.json()
+    # Must return the deployment so the worker can see desired_state changes.
+    assert body["id"] == dep["id"]
+    assert body["desired_state"] == "running"
+    assert body["heartbeat_at"] > r1["heartbeat_at"]
 
 
 # ---------- logs ----------

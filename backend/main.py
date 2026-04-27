@@ -865,13 +865,16 @@ def worker_heartbeat(
     deployment_id: str,
     session: Session = Depends(get_session),
     _: None = Depends(get_worker),
-) -> dict[str, str]:
+) -> dict[str, Any]:
+    """Refresh the worker's claim. Returns the current deployment row so the
+    worker can see whether `desired_state` flipped (e.g. user clicked stop)
+    without a separate fetch."""
     dep = session.get(Deployment, deployment_id)
     if dep is None:
         raise HTTPException(status_code=404, detail="deployment not found")
     dep.heartbeat_at = utcnow()
     session.flush()
-    return {"status": "ok"}
+    return _serialize_deployment(dep)
 
 
 @app.post("/worker/deployments/{deployment_id}/logs")
