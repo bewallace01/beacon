@@ -163,6 +163,108 @@ def test_deployment_creates_agent_row_if_new(client, alice):
     assert "brand-new-bot" in names
 
 
+def test_logs_fetch_returns_recent_lines(client, alice):
+    """Worker writes via /worker/* (tested in test_worker_api). User reads
+    via /workspaces/me/deployments/{id}/logs."""
+    h = auth_headers(alice["session_token"])
+    dep = _upload(client, h).json()
+
+    # Seed via the worker endpoint.
+    worker_h = {"Authorization": "Bearer test-worker-token"}
+    client.post(
+        f"/worker/deployments/{dep['id']}/logs",
+        headers=worker_h,
+        json={"lines": [
+            {"stream": "stdout", "line": f"line {i}"} for i in range(5)
+        ]},
+    )
+
+    r = client.get(
+        f"/workspaces/me/deployments/{dep['id']}/logs", headers=h,
+    )
+    assert r.status_code == 200
+    body = r.json()
+    assert [x["line"] for x in body["lines"]] == [f"line {i}" for i in range(5)]
+    assert body["max_id"] > 0
+
+
+def test_logs_fetch_after_id_returns_incremental(client, alice):
+    h = auth_headers(alice["session_token"])
+    dep = _upload(client, h).json()
+    worker_h = {"Authorization": "Bearer test-worker-token"}
+
+    client.post(
+        f"/worker/deployments/{dep['id']}/logs",
+        headers=worker_h,
+        json={"lines": [
+            {"stream": "stdout", "line": f"a{i}"} for i in range(3)
+        ]},
+    )
+    r = client.get(
+        f"/workspaces/me/deployments/{dep['id']}/logs", headers=h,
+    )
+    first_max = r.json()["max_id"]
+
+    client.post(
+        f"/worker/deployments/{dep['id']}/logs",
+        headers=worker_h,
+        json={"lines": [
+            {"stream": "stdout", "line": f"b{i}"} for i in range(2)
+        ]},
+    )
+    r = client.get(
+        f"/workspaces/me/deployments/{dep['id']}/logs"
+        f"?after_id={first_max}",
+        headers=h,
+    )
+    body = r.json()
+    assert [x["line"] for x in body["lines"]] == ["b0", "b1"]
+
+
+def test_logs_cross_workspace_404(client, alice, bob):
+    h_a = auth_headers(alice["session_token"])
+    h_b = auth_headers(bob["session_token"])
+    dep = _upload(client, h_a).json()
+    r = client.get(
+        f"/workspaces/me/deployments/{dep['id']}/logs", headers=h_b,
+    )
+    assert r.status_code == 404
+
+
+def test_stop_flips_desired_state(client, alice):
+    h = auth_headers(alice["session_token"])
+    dep = _upload(client, h).json()
+    assert dep["desired_state"] == "running"
+
+    r = client.post(
+        f"/workspaces/me/deployments/{dep['id']}/stop", headers=h,
+    )
+    assert r.status_code == 200
+    assert r.json()["desired_state"] == "stopped"
+
+
+def test_redeploy_creates_new_pointing_at_same_blob(client, alice):
+    h = auth_headers(alice["session_token"])
+    old = _upload(client, h, agent_name="x").json()
+    blob_id = old["source_blob_id"]
+
+    r = client.post(
+        f"/workspaces/me/deployments/{old['id']}/redeploy", headers=h,
+    )
+    assert r.status_code == 200
+    new = r.json()
+    assert new["id"] != old["id"]
+    assert new["source_blob_id"] == blob_id
+    assert new["status"] == "queued"
+    assert new["agent_name"] == "x"
+
+    # Old deployment is now flagged stopped.
+    refetch = client.get(
+        f"/workspaces/me/deployments/{old['id']}", headers=h,
+    ).json()
+    assert refetch["desired_state"] == "stopped"
+
+
 def test_unauthenticated_blocked(client):
     r = client.get("/workspaces/me/deployments")
     assert r.status_code == 401

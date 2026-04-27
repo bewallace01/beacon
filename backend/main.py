@@ -726,6 +726,96 @@ def get_deployment(
     return _serialize_deployment(d)
 
 
+@app.get("/workspaces/me/deployments/{deployment_id}/logs")
+def get_deployment_logs(
+    deployment_id: str,
+    after_id: int = 0,
+    limit: int = 200,
+    session: Session = Depends(get_session),
+    workspace_id: str = Depends(get_workspace_id),
+) -> dict[str, Any]:
+    """Tail-style log fetch. Pass `after_id` to get only lines newer than the
+    last id you saw. `limit` caps the response (1-1000)."""
+    limit = max(1, min(limit, 1000))
+    dep = session.get(Deployment, deployment_id)
+    if dep is None or dep.workspace_id != workspace_id:
+        raise HTTPException(status_code=404, detail="deployment not found")
+    rows = session.execute(
+        select(DeploymentLog)
+        .where(
+            DeploymentLog.deployment_id == deployment_id,
+            DeploymentLog.id > after_id,
+        )
+        .order_by(DeploymentLog.id)
+        .limit(limit)
+    ).scalars().all()
+    return {
+        "lines": [
+            {
+                "id": r.id,
+                "ts": r.ts.isoformat(),
+                "stream": r.stream,
+                "line": r.line,
+            }
+            for r in rows
+        ],
+        "max_id": rows[-1].id if rows else after_id,
+    }
+
+
+@app.post("/workspaces/me/deployments/{deployment_id}/stop")
+def stop_deployment(
+    deployment_id: str,
+    session: Session = Depends(get_session),
+    workspace_id: str = Depends(get_workspace_id),
+) -> dict[str, Any]:
+    """Flip desired_state to stopped. The worker's heartbeat picks it up
+    within ~30s and terminates the bot."""
+    dep = session.get(Deployment, deployment_id)
+    if dep is None or dep.workspace_id != workspace_id:
+        raise HTTPException(status_code=404, detail="deployment not found")
+    dep.desired_state = "stopped"
+    dep.updated_at = utcnow()
+    session.flush()
+    return _serialize_deployment(dep)
+
+
+@app.post("/workspaces/me/deployments/{deployment_id}/redeploy")
+def redeploy_deployment(
+    deployment_id: str,
+    session: Session = Depends(get_session),
+    workspace_id: str = Depends(get_workspace_id),
+) -> dict[str, Any]:
+    """Create a new deployment pointing at the same source blob. The old
+    deployment is stopped (desired_state=stopped) so the worker swaps over
+    cleanly. Useful for restarting a wedged bot without re-uploading."""
+    old = session.get(Deployment, deployment_id)
+    if old is None or old.workspace_id != workspace_id:
+        raise HTTPException(status_code=404, detail="deployment not found")
+    if old.source_blob_id is None:
+        raise HTTPException(
+            status_code=400,
+            detail="deployment has no source blob to redeploy from",
+        )
+    now = utcnow()
+    old.desired_state = "stopped"
+    old.updated_at = now
+
+    new = Deployment(
+        id=str(uuid.uuid4()),
+        workspace_id=workspace_id,
+        agent_name=old.agent_name,
+        status="queued",
+        desired_state="running",
+        source_blob_id=old.source_blob_id,
+        created_at=now,
+        updated_at=now,
+    )
+    session.add(new)
+    session.flush()
+    return _serialize_deployment(new)
+
+
 @app.delete("/workspaces/me/deployments/{deployment_id}")
 def delete_deployment(
     deployment_id: str,

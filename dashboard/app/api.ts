@@ -466,6 +466,75 @@ export async function fetchAgentInstances(
   return body.instances;
 }
 
+// ----- Deployments (Phase 5.4 + 5.6) -----
+
+export type Deployment = {
+  id: string;
+  agent_name: string;
+  status: "queued" | "building" | "running" | "stopped" | "failed";
+  desired_state: "running" | "stopped";
+  source_blob_id: string | null;
+  error: string | null;
+  claimed_by: string | null;
+  claimed_at: string | null;
+  heartbeat_at: string | null;
+  started_at: string | null;
+  stopped_at: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type DeploymentLogLine = {
+  id: number;
+  ts: string;
+  stream: "stdout" | "stderr" | "system";
+  line: string;
+};
+
+export async function fetchDeployments(
+  agentName?: string,
+): Promise<Deployment[]> {
+  const qs = agentName
+    ? `?agent_name=${encodeURIComponent(agentName)}`
+    : "";
+  const body = (await authedJson(`/workspaces/me/deployments${qs}`)) as {
+    deployments: Deployment[];
+  };
+  return body.deployments;
+}
+
+export async function fetchDeployment(id: string): Promise<Deployment> {
+  return (await authedJson(
+    `/workspaces/me/deployments/${id}`,
+  )) as Deployment;
+}
+
+export async function fetchDeploymentLogs(
+  id: string,
+  afterId = 0,
+  limit = 200,
+): Promise<{ lines: DeploymentLogLine[]; max_id: number }> {
+  return (await authedJson(
+    `/workspaces/me/deployments/${id}/logs?after_id=${afterId}&limit=${limit}`,
+  )) as { lines: DeploymentLogLine[]; max_id: number };
+}
+
+export async function stopDeployment(id: string): Promise<Deployment> {
+  return (await authedJson(`/workspaces/me/deployments/${id}/stop`, {
+    method: "POST",
+  })) as Deployment;
+}
+
+export async function redeployDeployment(id: string): Promise<Deployment> {
+  return (await authedJson(`/workspaces/me/deployments/${id}/redeploy`, {
+    method: "POST",
+  })) as Deployment;
+}
+
+export async function deleteDeployment(id: string): Promise<void> {
+  await authedJson(`/workspaces/me/deployments/${id}`, { method: "DELETE" });
+}
+
 // ----- Chat -----
 
 export type Thread = {

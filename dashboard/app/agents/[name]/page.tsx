@@ -9,12 +9,16 @@ import {
   AgentManifest,
   cancelCommand,
   Command,
+  Deployment,
   enqueueCommand,
   fetchAgent,
   fetchAgentInstances,
   fetchAgentManifest,
   fetchCommands,
+  fetchDeployments,
   patchAgent,
+  redeployDeployment,
+  stopDeployment,
   UnauthorizedError,
 } from "../../api";
 import Header from "../../Header";
@@ -50,6 +54,7 @@ export default function AgentPage({ params }: { params: { name: string } }) {
   const [manifest, setManifest] = useState<AgentManifest | null>(null);
   const [agent, setAgent] = useState<Agent | null>(null);
   const [instances, setInstances] = useState<AgentInstance[]>([]);
+  const [deployments, setDeployments] = useState<Deployment[]>([]);
   const [systemPromptDraft, setSystemPromptDraft] = useState("");
   const [systemPromptSaving, setSystemPromptSaving] = useState(false);
   const [systemPromptSavedAt, setSystemPromptSavedAt] = useState<number | null>(null);
@@ -61,15 +66,17 @@ export default function AgentPage({ params }: { params: { name: string } }) {
 
   const load = async () => {
     try {
-      const [cmds, mf, ag, inst] = await Promise.all([
+      const [cmds, mf, ag, inst, deps] = await Promise.all([
         fetchCommands(agentName),
         fetchAgentManifest(agentName),
         fetchAgent(agentName).catch(() => null),
         fetchAgentInstances(agentName).catch(() => []),
+        fetchDeployments(agentName).catch(() => [] as Deployment[]),
       ]);
       setCommands(cmds);
       setManifest(mf);
       setInstances(inst);
+      setDeployments(deps);
       if (ag) {
         setAgent(ag);
         // Only sync the draft if the user hasn't typed since last load.
@@ -244,6 +251,106 @@ export default function AgentPage({ params }: { params: { name: string } }) {
         <div className="mb-6 p-3 border border-red-200 bg-red-50 text-red-700 text-sm rounded-md">
           {error}
         </div>
+      )}
+
+      {deployments.length > 0 && (
+        <section className="mb-10">
+          <div className="flex items-baseline justify-between mb-3">
+            <h2 className="text-[11px] font-semibold text-gray-500 uppercase tracking-wider">
+              Deployments
+            </h2>
+            <span className="text-[11px] text-gray-400 font-mono">
+              upload from CLI: <code>lightsei deploy ./{agentName}</code>
+            </span>
+          </div>
+          <div className="border border-gray-200 rounded-lg divide-y divide-gray-100">
+            {deployments.slice(0, 10).map((d) => (
+              <div
+                key={d.id}
+                className="px-4 py-2.5 flex items-center justify-between text-sm gap-3"
+              >
+                <div className="flex items-center gap-3 min-w-0">
+                  {(() => {
+                    const cls =
+                      d.status === "running"
+                        ? "bg-green-100 text-green-800"
+                        : d.status === "failed"
+                          ? "bg-red-100 text-red-800"
+                          : d.status === "stopped"
+                            ? "bg-gray-100 text-gray-700"
+                            : d.status === "building"
+                              ? "bg-amber-100 text-amber-800"
+                              : "bg-blue-100 text-blue-800";
+                    return (
+                      <span
+                        className={
+                          "inline-block px-2 py-0.5 rounded-full text-[10px] font-medium uppercase tracking-wider " +
+                          cls
+                        }
+                      >
+                        {d.status}
+                      </span>
+                    );
+                  })()}
+                  <Link
+                    href={`/deployments/${d.id}`}
+                    className="font-mono text-gray-700 hover:text-accent-700 truncate"
+                  >
+                    {d.id.slice(0, 8)}…
+                  </Link>
+                  {d.error && (
+                    <span
+                      className="text-[11px] text-red-700 truncate max-w-md"
+                      title={d.error}
+                    >
+                      {d.error}
+                    </span>
+                  )}
+                </div>
+                <div className="flex items-center gap-3 text-[11px] text-gray-400 font-mono">
+                  <span>created {fmt(d.created_at)}</span>
+                  {(d.status === "running" ||
+                    d.status === "building" ||
+                    d.status === "queued") && (
+                    <button
+                      type="button"
+                      onClick={async () => {
+                        if (!confirm("Stop this deployment?")) return;
+                        try {
+                          await stopDeployment(d.id);
+                          await load();
+                        } catch (e) {
+                          setError(String(e));
+                        }
+                      }}
+                      className="text-red-600 hover:text-red-700 font-medium"
+                    >
+                      stop
+                    </button>
+                  )}
+                  {(d.status === "stopped" ||
+                    d.status === "failed") && (
+                    <button
+                      type="button"
+                      onClick={async () => {
+                        if (!confirm("Redeploy from this bundle?")) return;
+                        try {
+                          await redeployDeployment(d.id);
+                          await load();
+                        } catch (e) {
+                          setError(String(e));
+                        }
+                      }}
+                      className="text-accent-700 hover:text-accent-800 font-medium"
+                    >
+                      redeploy
+                    </button>
+                  )}
+                </div>
+              </div>
+            ))}
+          </div>
+        </section>
       )}
 
       <section className="mb-10">
