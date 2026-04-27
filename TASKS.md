@@ -4,7 +4,7 @@ Read MEMORY.md first if it's been a while. (Older Done Log entries call the proj
 
 ## NOW
 
-> **Phase 6.1: Polaris bot scaffold**
+> **Phase 6.2: Plan event schema + emit + change detection**
 
 Phase 5 shipped 2026-04-26: PaaS-for-agents end-to-end. See "Runtime decision (2026-04-27)" in MEMORY.md for the architecture call (single-host worker now, managed runtime in 5B). Phase 6 dogfoods Phase 5: Polaris is itself a Lightsei bot deployed via the PaaS we just built.
 
@@ -115,17 +115,9 @@ Phase 5A scope: single-host worker, in-process subprocess per bot, only safe for
 
 **Why Polaris dogfoods itself.** Polaris is Lightsei's first own product running on Lightsei's own infra. Every roughness in Phase 5 (deploy UX, log streaming, secrets injection, heartbeat semantics) gets re-felt while we operate Polaris in production. That's the point.
 
-### 6.1 Polaris bot scaffold (NOW)
+### 6.1 Polaris bot scaffold ✅ done 2026-04-27 (see Done Log)
 
-- New `polaris/` directory at repo root with:
-  - `bot.py` — main loop: read MEMORY.md + TASKS.md from cwd, hash them, call Claude with the orchestrator prompt, emit a `polaris.plan` event, sleep, repeat.
-  - `system_prompt.md` — the orchestrator instructions Claude sees on every run.
-  - `requirements.txt` — `anthropic`, plus the local lightsei wheel reference (Phase 5 demo pattern).
-  - `lightsei-0.0.1-py3-none-any.whl` — bundled wheel, rebuilt from `./sdk` per deploy.
-- Configurable via env: `POLARIS_POLL_S` (default 3600), `POLARIS_MODEL` (default `claude-opus-4-7`), `POLARIS_DOCS_DIR` (default `.`).
-- Workspace secrets needed: `LIGHTSEI_API_KEY` (already convention from Phase 5), `ANTHROPIC_API_KEY`.
-
-### 6.2 Plan event schema + emit + change detection
+### 6.2 Plan event schema + emit + change detection (NOW)
 
 - Define payload schema for `polaris.plan` events:
   ```
@@ -209,6 +201,14 @@ Ideas that are good but not now. Add freely. Do not work on these until their ph
 ## Done Log
 
 Move tasks here as they finish. Look at this when momentum dips.
+
+### 2026-04-27 — Phase 6.1 Polaris bot scaffold
+- [x] New `polaris/` at repo root with `bot.py`, `system_prompt.md` (placeholder, real version in 6.5), `requirements.txt`, and a bundled `lightsei-0.0.1-py3-none-any.whl` (rebuilt from `./sdk` per deploy, same pattern Phase 5's demo bundle used).
+- [x] `bot.py` loop: read `MEMORY.md` + `TASKS.md` from `POLARIS_DOCS_DIR`, hash both with sha256 (truncated to 16 hex chars), call Claude with the orchestrator system prompt via the Anthropic SDK, emit `polaris.plan_raw` carrying `{text, hashes, model, tokens_in, tokens_out}`. Wrapped in `@lightsei.track` so each tick is its own run.
+- [x] Configurable env: `POLARIS_POLL_S` (3600), `POLARIS_MODEL` (`claude-opus-4-7`), `POLARIS_DOCS_DIR` (`.`), and `POLARIS_DRY_RUN=1` which skips the Anthropic call (emits `polaris.tick_dry_run` instead) so the loop is verifiable without an API key.
+- [x] Required workspace secrets at deploy time: `LIGHTSEI_API_KEY` and `ANTHROPIC_API_KEY` (the second one is skipped in dry-run mode).
+- Verified locally against this project's docs: `POLARIS_DRY_RUN=1 POLARIS_POLL_S=4` ran for ~12s, produced 3 ticks. Each tick read `MEMORY.md` + `TASKS.md` (resolved to `/Users/baileywallace/Desktop/Beacon/Beacon`), computed identical hashes (`memory=74a298e82dd60a65`, `tasks=c2f08f32620756c8`), opened a Lightsei run, emitted `polaris.tick_dry_run` with the hash payload, and closed the run. Confirmed via prod API: 3 separate runs against agent `polaris-local-test` ingested with the expected `run_started → polaris.tick_dry_run → run_ended` sequence on each. Total verification time: ~30s. Note: the `polaris-local-test` agent now exists in the workspace as test data; the real Phase 6.6 demo will deploy under agent name `polaris`, so the two are segregated.
+- Schema choice that helps 6.2: the `hashes` field on `polaris.plan_raw` / `polaris.tick_dry_run` is exactly what 6.2's change-detection will read from the latest event to decide whether to skip the next LLM call. 6.1 and 6.2 are wired so 6.2 is purely additive.
 
 ### 2026-04-26 — Phase 5 PaaS for agents COMPLETE 🎯
 Demo criterion (from MEMORY.md / Phase 5 header): *"From a fresh terminal, `lightsei deploy ./my-bot` zips the directory, uploads it, and a worker process spawns the bot. Within a minute the dashboard shows the deployment as `running`, the bot's instance heartbeats are visible, and logs stream into a Deployments tab. Stop and redeploy from the dashboard work end-to-end. Nothing about the user's bot code changes between local and hosted runs."* — passed.
