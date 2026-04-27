@@ -39,6 +39,12 @@ def fake_backend(received: list[dict]) -> Iterator[str]:
                 self.send_header("content-type", "application/json")
                 self.end_headers()
                 self.wfile.write(b'{"allow":true}')
+            elif self.path.endswith("/instances/heartbeat"):
+                received.append({"_path": self.path, **data})
+                self.send_response(200)
+                self.send_header("content-type", "application/json")
+                self.end_headers()
+                self.wfile.write(b'{"status":"active"}')
             else:
                 self.send_error(404)
 
@@ -80,12 +86,13 @@ def test_emit_and_flush_against_fake_backend():
         # give background thread one more tick
         time.sleep(0.2)
 
-    kinds = [e.get("kind") for e in received]
+    events = [e for e in received if "kind" in e]
+    kinds = [e["kind"] for e in events]
     assert "run_started" in kinds
     assert "run_ended" in kinds
     assert "custom" in kinds
 
-    custom = next(e for e in received if e["kind"] == "custom")
+    custom = next(e for e in events if e["kind"] == "custom")
     assert custom["payload"] == {"x": 1}
     assert custom["agent_name"] == "demo"
 
@@ -115,6 +122,29 @@ def test_run_completes_with_backend_offline():
 def test_emit_before_init_is_silent():
     # No init. emit() must not raise and must not connect.
     lightsei.emit("anything", {"x": 1})
+
+
+def test_heartbeat_registers_on_init():
+    """init() should fire a synchronous heartbeat so the dashboard sees the
+    instance immediately, without waiting for the first timer tick."""
+    received: list[dict] = []
+    with fake_backend(received) as url:
+        lightsei.init(
+            api_key="k",
+            agent_name="demo",
+            base_url=url,
+            heartbeat_interval=10.0,  # we only care about the synchronous one
+        )
+        # Give the eager post a moment to land.
+        time.sleep(0.1)
+
+    heartbeats = [r for r in received if r.get("_path", "").endswith("/heartbeat")]
+    assert heartbeats, "expected a heartbeat post on init"
+    h = heartbeats[0]
+    assert h["instance_id"]
+    assert h["pid"]
+    assert h["hostname"]
+    assert h["_path"] == "/agents/demo/instances/heartbeat"
 
 
 def test_policy_check_fails_open_when_offline():

@@ -27,6 +27,7 @@ from keys import (
 from migrate import upgrade_to_head
 from models import (
     Agent,
+    AgentInstance,
     ApiKey,
     Command,
     Event,
@@ -41,6 +42,9 @@ from passwords import hash_password, verify_password
 
 SESSION_TTL = timedelta(days=30)
 COMMAND_TTL = timedelta(hours=24)
+# An instance is "active" if we heard from it within this window. Tuned for a
+# default 30s SDK heartbeat with two missed beats of slack.
+INSTANCE_ACTIVE_WINDOW = timedelta(seconds=90)
 
 
 def utcnow() -> datetime:
@@ -122,6 +126,14 @@ class ThreadMessageCompleteIn(BaseModel):
 
 class ThreadMessageChunkIn(BaseModel):
     delta: str
+
+
+class InstanceHeartbeatIn(BaseModel):
+    instance_id: str = Field(min_length=1)
+    hostname: Optional[str] = None
+    pid: Optional[int] = None
+    sdk_version: Optional[str] = None
+    started_at: Optional[datetime] = None
 
 
 def _serialize_api_key(k: ApiKey) -> dict[str, Any]:
@@ -817,6 +829,87 @@ def get_manifest(
             "last_seen_at": None,
         }
     return _serialize_manifest(a)
+
+
+def _serialize_instance(i: AgentInstance, now: datetime) -> dict[str, Any]:
+    age = now - i.last_heartbeat_at
+    return {
+        "id": i.id,
+        "agent_name": i.agent_name,
+        "hostname": i.hostname,
+        "pid": i.pid,
+        "sdk_version": i.sdk_version,
+        "started_at": i.started_at.isoformat(),
+        "last_heartbeat_at": i.last_heartbeat_at.isoformat(),
+        "status": "active" if age <= INSTANCE_ACTIVE_WINDOW else "stale",
+    }
+
+
+@app.post("/agents/{agent_name}/instances/heartbeat")
+def instance_heartbeat(
+    agent_name: str,
+    body: InstanceHeartbeatIn,
+    session: Session = Depends(get_session),
+    workspace_id: str = Depends(get_workspace_id),
+) -> dict[str, Any]:
+    """Upsert by instance_id: register on first call, refresh last_heartbeat_at
+    on every subsequent call. Idempotent. SDK calls this on init() and then
+    on a timer.
+    """
+    now = utcnow()
+    ensure_agent(session, workspace_id, agent_name, now)
+    inst = session.get(AgentInstance, body.instance_id)
+    if inst is None:
+        inst = AgentInstance(
+            id=body.instance_id,
+            workspace_id=workspace_id,
+            agent_name=agent_name,
+            hostname=body.hostname,
+            pid=body.pid,
+            sdk_version=body.sdk_version,
+            started_at=body.started_at or now,
+            last_heartbeat_at=now,
+        )
+        session.add(inst)
+    elif inst.workspace_id != workspace_id or inst.agent_name != agent_name:
+        # Instance id collision across workspaces or agents — refuse rather
+        # than overwrite. SDK uses uuid4 so this is virtually impossible
+        # without a deliberately spoofed id.
+        raise HTTPException(
+            status_code=409, detail="instance id belongs to another agent",
+        )
+    else:
+        inst.last_heartbeat_at = now
+        # Allow these to refresh in case the SDK updates between heartbeats.
+        if body.hostname is not None:
+            inst.hostname = body.hostname
+        if body.pid is not None:
+            inst.pid = body.pid
+        if body.sdk_version is not None:
+            inst.sdk_version = body.sdk_version
+    session.flush()
+    return _serialize_instance(inst, now)
+
+
+@app.get("/agents/{agent_name}/instances")
+def list_instances(
+    agent_name: str,
+    session: Session = Depends(get_session),
+    workspace_id: str = Depends(get_workspace_id),
+) -> dict[str, Any]:
+    """List instances for this agent, newest heartbeat first. Each row carries
+    a computed `status` of `active` or `stale` so the dashboard doesn't need
+    to know the heartbeat threshold."""
+    now = utcnow()
+    rows = session.execute(
+        select(AgentInstance)
+        .where(
+            AgentInstance.workspace_id == workspace_id,
+            AgentInstance.agent_name == agent_name,
+        )
+        .order_by(desc(AgentInstance.last_heartbeat_at))
+    ).scalars().all()
+    return {"instances": [_serialize_instance(i, now) for i in rows]}
 
 
 def _serialize_thread(t: Thread) -> dict[str, Any]:

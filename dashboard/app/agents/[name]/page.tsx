@@ -5,11 +5,13 @@ import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 import {
   Agent,
+  AgentInstance,
   AgentManifest,
   cancelCommand,
   Command,
   enqueueCommand,
   fetchAgent,
+  fetchAgentInstances,
   fetchAgentManifest,
   fetchCommands,
   patchAgent,
@@ -47,6 +49,7 @@ export default function AgentPage({ params }: { params: { name: string } }) {
   const [commands, setCommands] = useState<Command[]>([]);
   const [manifest, setManifest] = useState<AgentManifest | null>(null);
   const [agent, setAgent] = useState<Agent | null>(null);
+  const [instances, setInstances] = useState<AgentInstance[]>([]);
   const [systemPromptDraft, setSystemPromptDraft] = useState("");
   const [systemPromptSaving, setSystemPromptSaving] = useState(false);
   const [systemPromptSavedAt, setSystemPromptSavedAt] = useState<number | null>(null);
@@ -58,13 +61,15 @@ export default function AgentPage({ params }: { params: { name: string } }) {
 
   const load = async () => {
     try {
-      const [cmds, mf, ag] = await Promise.all([
+      const [cmds, mf, ag, inst] = await Promise.all([
         fetchCommands(agentName),
         fetchAgentManifest(agentName),
         fetchAgent(agentName).catch(() => null),
+        fetchAgentInstances(agentName).catch(() => []),
       ]);
       setCommands(cmds);
       setManifest(mf);
+      setInstances(inst);
       if (ag) {
         setAgent(ag);
         // Only sync the draft if the user hasn't typed since last load.
@@ -151,27 +156,28 @@ export default function AgentPage({ params }: { params: { name: string } }) {
           <span className="font-mono">{agentName}</span>
         </h1>
         {(() => {
-          const lastSeen = manifest?.last_seen_at
-            ? new Date(manifest.last_seen_at).getTime()
-            : null;
-          if (lastSeen === null) return null;
-          // Heuristic: a bot "checked in" via manifest at init OR via a poll.
-          // Without per-poll heartbeats we just show when it last checked in.
-          const ageSec = (Date.now() - lastSeen) / 1000;
-          const live = ageSec < 60;
-          return (
-            <span
-              className={
-                "inline-block px-2 py-0.5 rounded-full text-[11px] font-medium " +
-                (live
-                  ? "bg-green-100 text-green-800"
-                  : "bg-gray-100 text-gray-700")
-              }
-              title={`last seen ${manifest!.last_seen_at}`}
-            >
-              {live ? "live" : "idle"}
-            </span>
-          );
+          const activeCount = instances.filter((i) => i.status === "active").length;
+          if (activeCount > 0) {
+            return (
+              <span
+                className="inline-block px-2 py-0.5 rounded-full text-[11px] font-medium bg-green-100 text-green-800"
+                title={`${activeCount} active instance(s)`}
+              >
+                {activeCount === 1 ? "live" : `live · ${activeCount}`}
+              </span>
+            );
+          }
+          if (instances.length > 0) {
+            return (
+              <span
+                className="inline-block px-2 py-0.5 rounded-full text-[11px] font-medium bg-gray-100 text-gray-700"
+                title="all known instances are stale"
+              >
+                idle
+              </span>
+            );
+          }
+          return null;
         })()}
       </div>
       <p className="text-sm text-gray-500 mt-1 mb-3">
@@ -188,6 +194,51 @@ export default function AgentPage({ params }: { params: { name: string } }) {
           <span className="text-xs">→</span>
         </Link>
       </div>
+
+      {instances.length > 0 && (
+        <section className="mb-10">
+          <h2 className="text-[11px] font-semibold text-gray-500 mb-3 uppercase tracking-wider">
+            Instances
+          </h2>
+          <div className="border border-gray-200 rounded-lg divide-y divide-gray-100">
+            {instances.map((i) => (
+              <div
+                key={i.id}
+                className="px-4 py-2.5 flex items-center justify-between text-sm"
+              >
+                <div className="flex items-center gap-3 min-w-0">
+                  <span
+                    className={
+                      "inline-block px-2 py-0.5 rounded-full text-[10px] font-medium uppercase tracking-wider " +
+                      (i.status === "active"
+                        ? "bg-green-100 text-green-800"
+                        : "bg-gray-100 text-gray-600")
+                    }
+                  >
+                    {i.status}
+                  </span>
+                  <span className="font-mono text-gray-800 truncate">
+                    {i.hostname || "unknown-host"}
+                    {i.pid !== null && (
+                      <span className="text-gray-400">
+                        {" "}· pid {i.pid}
+                      </span>
+                    )}
+                  </span>
+                  {i.sdk_version && (
+                    <span className="text-[10px] text-gray-400 font-mono">
+                      sdk {i.sdk_version}
+                    </span>
+                  )}
+                </div>
+                <div className="text-[11px] text-gray-400 font-mono">
+                  last seen {fmt(i.last_heartbeat_at)}
+                </div>
+              </div>
+            ))}
+          </div>
+        </section>
+      )}
 
       {error && (
         <div className="mb-6 p-3 border border-red-200 bg-red-50 text-red-700 text-sm rounded-md">

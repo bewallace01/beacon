@@ -17,6 +17,7 @@ venv/
 node_modules/
 .next/
 npm-debug.log*
+tsconfig.tsbuildinfo
 
 # Claude Code state
 .claude/

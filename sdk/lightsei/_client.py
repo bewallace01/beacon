@@ -19,6 +19,7 @@ _MAX_QUEUE_SIZE = 10_000
 _DEFAULT_CAPTURE_CONTENT = True
 _DEFAULT_COMMAND_POLL_INTERVAL = 5.0
 _DEFAULT_CHAT_POLL_INTERVAL = 2.0
+_DEFAULT_HEARTBEAT_INTERVAL = 30.0
 
 
 class _Client:
@@ -36,6 +37,7 @@ class _Client:
         self.capture_content: bool = _DEFAULT_CAPTURE_CONTENT
         self.command_poll_interval: float = _DEFAULT_COMMAND_POLL_INTERVAL
         self.chat_poll_interval: float = _DEFAULT_CHAT_POLL_INTERVAL
+        self.heartbeat_interval: float = _DEFAULT_HEARTBEAT_INTERVAL
         self._queue: queue.Queue = queue.Queue(maxsize=_MAX_QUEUE_SIZE)
         self._http: Optional[httpx.Client] = None
         self._stop_event = threading.Event()
@@ -43,6 +45,7 @@ class _Client:
         self._atexit_registered = False
         self._command_poller = None  # set in init() if needed
         self._chat_poller = None     # set in init() if needed
+        self._heartbeat = None       # set in init() if agent_name set
 
     def is_initialized(self) -> bool:
         return self._initialized
@@ -60,6 +63,7 @@ class _Client:
         capture_content: Optional[bool] = None,
         command_poll_interval: Optional[float] = None,
         chat_poll_interval: Optional[float] = None,
+        heartbeat_interval: Optional[float] = None,
     ) -> None:
         with self._lock:
             if self._initialized:
@@ -84,6 +88,8 @@ class _Client:
                 self.command_poll_interval = command_poll_interval
             if chat_poll_interval is not None:
                 self.chat_poll_interval = chat_poll_interval
+            if heartbeat_interval is not None:
+                self.heartbeat_interval = heartbeat_interval
 
             headers = {"content-type": "application/json"}
             if self.api_key:
@@ -134,6 +140,18 @@ class _Client:
                     self._chat_poller.start()
             except Exception as e:  # pragma: no cover
                 logger.warning("lightsei chat poller failed to start: %s", e)
+
+            # Heartbeat: register an instance and refresh on a timer so the
+            # dashboard can show this process as alive.
+            try:
+                from ._instance import _HeartbeatPoster
+                if self.agent_name:
+                    self._heartbeat = _HeartbeatPoster(
+                        self, self.heartbeat_interval,
+                    )
+                    self._heartbeat.start()
+            except Exception as e:  # pragma: no cover
+                logger.warning("lightsei heartbeat failed to start: %s", e)
 
             self._initialized = True
             logger.info(
@@ -281,6 +299,11 @@ class _Client:
                 self._chat_poller.stop()
             except Exception:
                 pass
+        if self._heartbeat is not None:
+            try:
+                self._heartbeat.stop()
+            except Exception:
+                pass
         try:
             self.flush(timeout=2.0)
         except Exception:
@@ -306,6 +329,11 @@ class _Client:
                     self._chat_poller.stop()
                 except Exception:
                     pass
+            if self._heartbeat is not None:
+                try:
+                    self._heartbeat.stop()
+                except Exception:
+                    pass
             if self._http is not None:
                 try:
                     self._http.close()
@@ -323,12 +351,14 @@ class _Client:
             self.capture_content = _DEFAULT_CAPTURE_CONTENT
             self.command_poll_interval = _DEFAULT_COMMAND_POLL_INTERVAL
             self.chat_poll_interval = _DEFAULT_CHAT_POLL_INTERVAL
+            self.heartbeat_interval = _DEFAULT_HEARTBEAT_INTERVAL
             self._queue = queue.Queue(maxsize=_MAX_QUEUE_SIZE)
             self._http = None
             self._stop_event = threading.Event()
             self._flush_thread = None
             self._command_poller = None
             self._chat_poller = None
+            self._heartbeat = None
 
 
 _client = _Client()

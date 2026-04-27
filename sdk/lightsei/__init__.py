@@ -49,6 +49,7 @@ def init(
     capture_content: Optional[bool] = None,
     command_poll_interval: Optional[float] = None,
     chat_poll_interval: Optional[float] = None,
+    heartbeat_interval: Optional[float] = None,
 ) -> None:
     """Initialize Lightsei. Idempotent: a second call is ignored.
 
@@ -71,6 +72,7 @@ def init(
         capture_content=capture_content,
         command_poll_interval=command_poll_interval,
         chat_poll_interval=chat_poll_interval,
+        heartbeat_interval=heartbeat_interval,
     )
     _auto_patch()
 

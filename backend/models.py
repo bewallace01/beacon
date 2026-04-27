@@ -8,6 +8,7 @@ from sqlalchemy import (
     Float,
     ForeignKey,
     Index,
+    Integer,
     String,
     Text,
 )
@@ -210,6 +211,32 @@ class ThreadMessage(Base):
 
     __table_args__ = (
         Index("idx_thread_messages_thread", "thread_id", "created_at"),
+    )
+
+
+class AgentInstance(Base):
+    __tablename__ = "agent_instances"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    workspace_id: Mapped[str] = mapped_column(
+        String, ForeignKey("workspaces.id", ondelete="CASCADE"), nullable=False
+    )
+    agent_name: Mapped[str] = mapped_column(String, nullable=False)
+    hostname: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    pid: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    sdk_version: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    started_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    last_heartbeat_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+
+    __table_args__ = (
+        Index(
+            "idx_agent_instances_ws_agent",
+            "workspace_id", "agent_name", last_heartbeat_at.desc(),
+        ),
     )
 
 

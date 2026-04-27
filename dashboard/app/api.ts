@@ -414,6 +414,26 @@ export async function fetchAgentManifest(agentName: string): Promise<AgentManife
   )) as AgentManifest;
 }
 
+export type AgentInstance = {
+  id: string;
+  agent_name: string;
+  hostname: string | null;
+  pid: number | null;
+  sdk_version: string | null;
+  started_at: string;
+  last_heartbeat_at: string;
+  status: "active" | "stale";
+};
+
+export async function fetchAgentInstances(
+  agentName: string,
+): Promise<AgentInstance[]> {
+  const body = (await authedJson(
+    `/agents/${encodeURIComponent(agentName)}/instances`,
+  )) as { instances: AgentInstance[] };
+  return body.instances;
+}
+
 // ----- Chat -----
 
 export type Thread = {
