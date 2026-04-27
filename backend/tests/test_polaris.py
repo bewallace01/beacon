@@ -143,3 +143,62 @@ def test_latest_plan_unauthorized(client):
     """No auth header → 401."""
     r = client.get("/agents/polaris/latest-plan")
     assert r.status_code == 401
+
+
+# ---------- /agents/{name}/plans (history) ---------- #
+
+
+def test_list_plans_empty(client, alice):
+    h = auth_headers(alice["api_key"]["plaintext"])
+    r = client.get("/agents/polaris/plans", headers=h)
+    assert r.status_code == 200
+    assert r.json() == {"plans": []}
+
+
+def test_list_plans_newest_first(client, alice):
+    h = auth_headers(alice["api_key"]["plaintext"])
+    _emit_plan(client, h, "polaris", "first")
+    time.sleep(0.01)
+    _emit_plan(client, h, "polaris", "second")
+    time.sleep(0.01)
+    _emit_plan(client, h, "polaris", "third")
+
+    r = client.get("/agents/polaris/plans", headers=h)
+    assert r.status_code == 200
+    plans = r.json()["plans"]
+    assert [p["payload"]["summary"] for p in plans] == ["third", "second", "first"]
+
+
+def test_list_plans_respects_limit(client, alice):
+    h = auth_headers(alice["api_key"]["plaintext"])
+    for i in range(5):
+        _emit_plan(client, h, "polaris", f"plan-{i}")
+        time.sleep(0.005)
+
+    r = client.get("/agents/polaris/plans?limit=3", headers=h)
+    assert r.status_code == 200
+    plans = r.json()["plans"]
+    assert len(plans) == 3
+    assert plans[0]["payload"]["summary"] == "plan-4"
+    assert plans[2]["payload"]["summary"] == "plan-2"
+
+
+def test_list_plans_validates_limit(client, alice):
+    h = auth_headers(alice["api_key"]["plaintext"])
+    assert client.get("/agents/polaris/plans?limit=0", headers=h).status_code == 400
+    assert client.get("/agents/polaris/plans?limit=101", headers=h).status_code == 400
+    # Boundaries are valid.
+    assert client.get("/agents/polaris/plans?limit=1", headers=h).status_code == 200
+    assert client.get("/agents/polaris/plans?limit=100", headers=h).status_code == 200
+
+
+def test_list_plans_workspace_isolation(client, alice, bob):
+    ha = auth_headers(alice["api_key"]["plaintext"])
+    hb = auth_headers(bob["api_key"]["plaintext"])
+    _emit_plan(client, ha, "polaris", "alice")
+    _emit_plan(client, hb, "polaris", "bob")
+
+    plans_a = client.get("/agents/polaris/plans", headers=ha).json()["plans"]
+    plans_b = client.get("/agents/polaris/plans", headers=hb).json()["plans"]
+    assert len(plans_a) == 1 and plans_a[0]["payload"]["summary"] == "alice"
+    assert len(plans_b) == 1 and plans_b[0]["payload"]["summary"] == "bob"

@@ -48,6 +48,12 @@ export default function Header() {
               <span>{user.email}</span>
             </span>
             <Link
+              href="/polaris"
+              className="text-gray-700 hover:text-accent-600 transition-colors"
+            >
+              polaris
+            </Link>
+            <Link
               href="/account"
               className="text-gray-700 hover:text-accent-600 transition-colors"
             >

@@ -597,3 +597,67 @@ export async function postThreadMessage(
 export async function deleteThread(threadId: string): Promise<void> {
   await authedJson(`/threads/${threadId}`, { method: "DELETE" });
 }
+
+// ---------- Polaris (Phase 6.4) ---------- //
+
+export type PolarisNextAction = {
+  task: string;
+  why: string;
+  blocked_by: string | null;
+};
+
+export type PolarisPromotion = {
+  item: string;
+  why: string;
+};
+
+export type PolarisDrift = {
+  between: string;
+  observation: string;
+};
+
+export type PolarisPlanPayload = {
+  text: string;
+  doc_hashes: { memory_md: string; tasks_md: string };
+  model: string;
+  tokens_in: number;
+  tokens_out: number;
+  // present on successful parse
+  summary?: string;
+  next_actions?: PolarisNextAction[];
+  parking_lot_promotions?: PolarisPromotion[];
+  drift?: PolarisDrift[];
+  // present on parse failure
+  parse_error?: string;
+};
+
+export type PolarisPlan = {
+  event_id: number;
+  run_id: string;
+  agent_name: string;
+  timestamp: string;
+  payload: PolarisPlanPayload;
+};
+
+export async function fetchLatestPolarisPlan(
+  agentName: string,
+): Promise<PolarisPlan | null> {
+  const r = await fetch(
+    `${API_URL}/agents/${encodeURIComponent(agentName)}/latest-plan`,
+    { cache: "no-store", headers: authHeaders() },
+  );
+  if (r.status === 401) throw new UnauthorizedError();
+  if (r.status === 404) return null;
+  if (!r.ok) throw new Error(`/latest-plan returned ${r.status}`);
+  return (await r.json()) as PolarisPlan;
+}
+
+export async function fetchPolarisPlans(
+  agentName: string,
+  limit = 20,
+): Promise<PolarisPlan[]> {
+  const body = (await authedJson(
+    `/agents/${encodeURIComponent(agentName)}/plans?limit=${limit}`,
+  )) as { plans: PolarisPlan[] };
+  return body.plans;
+}

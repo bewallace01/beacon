@@ -4,7 +4,7 @@ Read MEMORY.md first if it's been a while. (Older Done Log entries call the proj
 
 ## NOW
 
-> **Phase 6.4: Dashboard "Polaris" view**
+> **Phase 6.5: System prompt iteration**
 
 Phase 5 shipped 2026-04-26: PaaS-for-agents end-to-end. See "Runtime decision (2026-04-27)" in MEMORY.md for the architecture call (single-host worker now, managed runtime in 5B). Phase 6 dogfoods Phase 5: Polaris is itself a Lightsei bot deployed via the PaaS we just built.
 
@@ -121,14 +121,9 @@ Phase 5A scope: single-host worker, in-process subprocess per bot, only safe for
 
 ### 6.3 Backend: latest-plan endpoint ✅ done 2026-04-27 (see Done Log)
 
-### 6.4 Dashboard "Polaris" view (NOW)
+### 6.4 Dashboard "Polaris" view ✅ done 2026-04-27 (see Done Log)
 
-- New `/polaris` route (separate from the agent page so it's a top-level concept, not buried). If the workspace has no `polaris.plan` events yet, render a "deploy Polaris" empty state with a copy-pasteable command.
-- Latest plan rendered as: summary up top, next-actions as a numbered list, parking-lot promotions and drift in collapsible sections, doc-hash chip + last-generated-at footer.
-- Plan history: a sidebar listing previous plans by timestamp, click to view a frozen version.
-- Polls every 30s.
-
-### 6.5 System prompt iteration
+### 6.5 System prompt iteration (NOW)
 
 - Draft the orchestrator system prompt in `polaris/system_prompt.md`. Hand-test against this very project's `MEMORY.md` + `TASKS.md` outside the bot loop (just hit the Anthropic API directly with the prompt) until the structured JSON output is stable and the recommendations match the user's intuition for what's next.
 - Pin temperature low (~0.2). Use Claude's structured-output / JSON mode if the SDK exposes it cleanly; otherwise add a strict format example and a parse-and-retry loop in `bot.py`.
@@ -181,6 +176,17 @@ Ideas that are good but not now. Add freely. Do not work on these until their ph
 ## Done Log
 
 Move tasks here as they finish. Look at this when momentum dips.
+
+### 2026-04-27 — Phase 6.4 Dashboard "Polaris" view
+- [x] **New `/polaris` route** at `dashboard/app/polaris/page.tsx`. Top-level concept, separate from agent pages (which still serve as the per-agent control plane). Linked from the global Header next to "account" so it's discoverable from anywhere in the dashboard.
+- [x] **Creative styling**, deviating intentionally from the rest of the dashboard's plain Tailwind aesthetic per user direction. Dark indigo/slate gradient hero band with a subtle hand-placed starfield (12 absolutely-positioned dots, deterministic so it doesn't jitter on render), a 4-pointed star glyph (distinct from the 5-pointed stars elsewhere), and a serif headline rendering the plan summary directly in the band. Eyebrow text in 0.2em-tracked uppercase reads "POLARIS · PROJECT ORCHESTRATOR." When no plan is selected the band says "Awaiting first sighting." in serif.
+- [x] **Guided empty state** when no `polaris.plan` events exist yet. Three numbered steps under "Polaris is dark.": build the wheel (copy-button), set ANTHROPIC_API_KEY in workspace secrets (link to /account), deploy via the CLI (copy-button). Footer card explains what Polaris does in 1 paragraph. Avoids the "blank page + opaque error" trap.
+- [x] **History sidebar** on the left (260px wide, sticky). Lists up to 50 past plans newest-first, each as a clickable button with relative timestamp ("4m ago") + absolute timestamp underneath. Selected plan has an indigo left-border accent and tinted background; the most recent plan gets a small star icon. Clicking switches the hero band + main pane to a frozen historical view. Selection persists across polls until a new tick lands.
+- [x] **Plan-detail rendering** in the main pane: numbered next-actions with `blocked_by` chips in amber when present, parking-lot promotions as small cards, drift entries with full amber styling (drift is a project-health signal, not a routine output). A grid of doc-hash + model + token chips at the bottom; a collapsible `<details>` for the raw Claude response (useful when `parse_error` is set, which renders as a dedicated amber banner above the rest).
+- [x] **30s polling** via setInterval; aborts cleanly on unmount.
+- [x] **Backend follow-on**: `GET /agents/{name}/plans?limit=N` (1..100, default 20) added to support the history sidebar. Validates limit, returns `{plans: [...]}` newest-first. Workspace-scoped, returns `{plans: []}` (200, not 404) when no events exist — distinct from latest-plan's 404 because callers iterating history shouldn't have to special-case "agent never emitted." 5 new tests covering empty list, ordering, limit bounds, validation 400s, and cross-workspace isolation. Full backend suite at 110/110.
+- [x] **api.ts additions**: PolarisNextAction / PolarisPromotion / PolarisDrift / PolarisPlanPayload / PolarisPlan types matching the 6.2 event schema; fetchLatestPolarisPlan and fetchPolarisPlans helpers using the existing authedJson pattern.
+- Verified end-to-end against `docker compose up db backend` with the rebuilt backend image and `npm run dev` for the dashboard. Captured three screenshots: `docs/phase6-polaris-empty.png` (genuine empty state, no plans in DB), `docs/phase6-polaris-plan.png` (latest plan rendered with summary in serif, 3 next-actions, 1 promotion, 1 drift entry, doc-hash chips), `docs/phase6-polaris-history.png` (clicked the second sidebar entry; hero band + main pane switched to that frozen plan, selection styling correct). Plans were injected via Python urllib against `/events` because two earlier shell-heredoc attempts fought with quoting; using the SDK-style POST avoided the issue.
 
 ### 2026-04-27 — Phase 6.3 Backend latest-plan endpoint
 - [x] `GET /agents/{agent_name}/latest-plan` returns the most recent `polaris.plan` event for the named agent in the calling workspace. 404 when no plan event has been emitted yet. The full event payload is wrapped in `{event_id, run_id, agent_name, timestamp, payload}`.

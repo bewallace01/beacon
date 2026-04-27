@@ -392,6 +392,16 @@ def patch_agent(
     return _serialize_agent(a)
 
 
+def _serialize_plan_event(row: Event) -> dict[str, Any]:
+    return {
+        "event_id": row.id,
+        "run_id": row.run_id,
+        "agent_name": row.agent_name,
+        "timestamp": row.timestamp.isoformat(),
+        "payload": row.payload or {},
+    }
+
+
 @app.get("/agents/{agent_name}/latest-plan")
 def get_agent_latest_plan(
     agent_name: str,
@@ -419,13 +429,39 @@ def get_agent_latest_plan(
     ).scalar_one_or_none()
     if row is None:
         raise HTTPException(status_code=404, detail="no plan yet")
-    return {
-        "event_id": row.id,
-        "run_id": row.run_id,
-        "agent_name": row.agent_name,
-        "timestamp": row.timestamp.isoformat(),
-        "payload": row.payload or {},
-    }
+    return _serialize_plan_event(row)
+
+
+@app.get("/agents/{agent_name}/plans")
+def list_agent_plans(
+    agent_name: str,
+    limit: int = 20,
+    session: Session = Depends(get_session),
+    workspace_id: str = Depends(get_workspace_id),
+) -> dict[str, Any]:
+    """Recent `polaris.plan` events for the given agent (newest
+    first), capped at `limit` (1..100, default 20). Powers the
+    dashboard's plan-history sidebar — returning full payloads
+    means the sidebar and the detail pane share data without a
+    second fetch.
+
+    Empty list (200) when the agent has no plan events yet —
+    distinct from latest-plan's 404 because callers iterating
+    history shouldn't have to special-case "agent never emitted."
+    """
+    if limit < 1 or limit > 100:
+        raise HTTPException(status_code=400, detail="limit must be 1..100")
+    rows = session.execute(
+        select(Event)
+        .where(
+            Event.workspace_id == workspace_id,
+            Event.agent_name == agent_name,
+            Event.kind == "polaris.plan",
+        )
+        .order_by(Event.timestamp.desc(), Event.id.desc())
+        .limit(limit)
+    ).scalars().all()
+    return {"plans": [_serialize_plan_event(r) for r in rows]}
 
 
 @app.post("/workspaces")
