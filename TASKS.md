@@ -4,7 +4,7 @@ Read MEMORY.md first if it's been a while. (Older Done Log entries call the proj
 
 ## NOW
 
-> **Phase 7.2: Content-rules validator**
+> **Phase 7.3: Validation pipeline + event annotation**
 
 Phase 5 shipped 2026-04-26: PaaS-for-agents end-to-end. Phase 6 shipped 2026-04-27: Polaris, the project orchestrator bot, deployed via the Phase 5 PaaS against this project's own docs. Phase 7 picks up the dogfood loop with output validation (MEMORY.md guardrail layer 3) — Polaris validates its own plans before they're treated as trustworthy by the dashboard. Layer 4 (behavioral rules) and command dispatch land in later phases once we trust Polaris's outputs enough to act on them.
 
@@ -141,13 +141,9 @@ Phase 5A scope: single-host worker, in-process subprocess per bot, only safe for
 
 ### 7.1 Validator interface + schema-strict validator ✅ done 2026-04-27 (see Done Log)
 
-### 7.2 Content-rules validator (NOW)
+### 7.2 Content-rules validator ✅ done 2026-04-28 (see Done Log)
 
-- Second concrete validator: pattern-based checks. Config shape: `{"rules": [{"name": str, "pattern": str, "fields": [str], "severity": "fail"|"warn"}]}`. The validator walks each named JSON path inside `fields`, runs the regex against any string values it finds, and emits a violation when the pattern matches (or doesn't, depending on the rule's `mode: "must_not_match" | "must_match"`).
-- Ship a default rule pack the demo will use: `email_in_summary` (must_not_match: `[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-z]{2,}` against `summary`), `banned_destructive_verbs` (must_not_match: `\b(delete|drop|truncate|destroy|nuke)\b` against `next_actions[].task`).
-- Tests: clean payload → ok=True, payload with email in summary → fail with rule name + matched substring redacted, payload with destructive verb → fail.
-
-### 7.3 Validation pipeline + event annotation
+### 7.3 Validation pipeline + event annotation (NOW)
 
 - Migration: new table `event_validations` (id, event_id FK, validator_name, status `pass|fail|warn`, violations JSONB, created_at). One row per (event, validator) pair. Index on `(event_id, validator_name)`.
 - Validator registry: workspace-scoped map of `(event_kind, validator_name) → config`. Stored in a new `validator_configs` table or as a JSON column on `agents` — pick whichever feels cleaner once we look at the Phase 4 multi-tenancy model. Registration via `PUT /workspaces/me/validators/{event_kind}/{validator_name}`.
@@ -218,6 +214,16 @@ Ideas that are good but not now. Add freely. Do not work on these until their ph
 ## Done Log
 
 Move tasks here as they finish. Look at this when momentum dips.
+
+### 2026-04-28 — Phase 7.2 Content-rules validator
+- [x] **Second concrete validator at `backend/validators/content_rules.py`.** Config shape: `{"rules": [{"name": str, "pattern": str, "fields": [str], "mode": "must_not_match"|"must_match", "severity": "fail"|"warn"}]}`. Each rule names a regex, a list of field paths to check, and a mode/severity. The validator walks the named paths, runs the regex against any string values found, and emits a violation per match (or non-match, depending on mode).
+- [x] **`severity: warn` violations are recorded but don't fail the result.** This is the hook for advisory-only rules — the dashboard chips will show WARN, but the event is still considered valid. Demo will use `fail`-severity rules; the warn path is there for future use.
+- [x] **Default rule pack** shipped as `DEFAULT_RULE_PACK` constant in the module: `email_in_summary` (must_not_match a permissive email regex against `summary`) and `banned_destructive_verbs` (must_not_match `\b(delete|drop|truncate|destroy|nuke)\b` against `next_actions[].task`). 7.3 will register this pack against `polaris.plan` events automatically when Polaris deploys.
+- [x] **Minimal field-path syntax** (`summary`, `outer.inner`, `next_actions[].task`). Implemented in 30 lines of `_parse_path` + `_walk` rather than pulling in jsonpath-ng or jmespath; the syntax is intentionally too small to need a real path library, and adding one for two demo rules would have been heavier than the entire module.
+- [x] **`_redact_match` for matched-substring display.** Short matches (under 8 chars) are kept verbatim because they're almost always the keyword the operator chose to flag (`delete`, `drop`); longer matches are redacted to first-char + `***` because they're more likely user-supplied content (emails, paths, names) the validator caught. The full match still lives in the original event payload — this field is just for display so the dashboard's eventual violation panel can render "what fired" without leaking PII into the violations table.
+- [x] **Robustness**: every config / rule error path emits a violation rather than raising. A bad rule (missing pattern, invalid regex) emits its own per-rule violation but doesn't stop the other rules from running. Missing fields silently yield nothing — schema-strict catches missing required fields, so content-rules treats them as "no values to check" to avoid double-reporting the same problem from two validators.
+- [x] **15 new tests** covering: clean pass with default pack, email-in-summary flag with redaction verified, destructive-verb flag with verbatim short match kept, multiple matches in array yield multiple violations, must_match mode, warn-severity preserves ok=True, invalid regex per-rule violation (other rules still run), missing pattern violation, missing config violation, missing field silently yields nothing (avoid double-report with schema-strict), array path resolution end-to-end, registry routing via `validate(name, ...)`, default pack rule names pinned, redaction threshold boundary, registry contains canonical `content_rules` key.
+- Verified: `pytest tests/test_validators.py -v` → **26/26** pass (was 11; +15 for content-rules). Full backend suite → **136/136** (was 121; +15). No I/O in any code path.
 
 ### 2026-04-27 — Phase 7.1 Validator interface + schema-strict validator
 - [x] **New `backend/validators/` package** with three files: `_types.py` (the `Violation` and `ValidationResult` types — plain dicts / TypedDict so storage in the future `event_validations` table is JSON-trivial), `schema_strict.py` (the first concrete validator), and `__init__.py` (a `REGISTRY` dict + a `validate(name, payload, config)` entry point).

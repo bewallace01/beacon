@@ -163,3 +163,215 @@ def test_registry_contains_schema_strict():
     must also touch any persisted event_validations.validator_name
     rows. This test pins the canonical name."""
     assert "schema_strict" in REGISTRY
+
+
+# ---------- content-rules: happy + sad paths ---------- #
+
+
+from validators import content_rules
+from validators.content_rules import (
+    DEFAULT_RULE_PACK,
+    _redact_match,
+    validate as content_rules_validate,
+)
+
+
+def _polaris_like_payload(summary="all good", task="ship it") -> dict:
+    return {
+        "summary": summary,
+        "next_actions": [{"task": task, "blocked_by": None}],
+    }
+
+
+def test_content_rules_passes_clean_payload():
+    result = content_rules_validate(
+        _polaris_like_payload(),
+        {"rules": DEFAULT_RULE_PACK},
+    )
+    assert result == {"ok": True, "violations": []}
+
+
+def test_content_rules_flags_email_in_summary():
+    payload = _polaris_like_payload(
+        summary="send the report to alice@example.com next week"
+    )
+    result = content_rules_validate(payload, {"rules": DEFAULT_RULE_PACK})
+    assert result["ok"] is False
+    assert len(result["violations"]) == 1
+    v = result["violations"][0]
+    assert v["rule"] == "email_in_summary"
+    assert v["path"] == "summary"
+    assert v["severity"] == "fail"
+    # Long match (the email) is redacted; full email is not stored on the
+    # violation. The original event payload still has it for audit.
+    assert "@example.com" not in v["matched"]
+    assert v["matched"].endswith("***")
+
+
+def test_content_rules_flags_destructive_verb():
+    payload = _polaris_like_payload(task="delete the orphaned cache rows")
+    result = content_rules_validate(payload, {"rules": DEFAULT_RULE_PACK})
+    assert result["ok"] is False
+    assert len(result["violations"]) == 1
+    v = result["violations"][0]
+    assert v["rule"] == "banned_destructive_verbs"
+    # "delete" is short (6 chars), kept verbatim so the operator can see
+    # which verb fired without going to the original event.
+    assert v["matched"] == "delete"
+
+
+def test_content_rules_emits_one_violation_per_array_match():
+    """Two destructive verbs in two next_actions yield two violations,
+    not one merged one."""
+    payload = {
+        "summary": "tidy up",
+        "next_actions": [
+            {"task": "delete this file", "blocked_by": None},
+            {"task": "drop the table", "blocked_by": None},
+            {"task": "leave alone", "blocked_by": None},
+        ],
+    }
+    result = content_rules_validate(payload, {"rules": DEFAULT_RULE_PACK})
+    assert result["ok"] is False
+    assert len(result["violations"]) == 2
+    matched = sorted(v["matched"] for v in result["violations"])
+    assert matched == ["delete", "drop"]
+
+
+def test_content_rules_must_match_mode_fails_on_missing_pattern():
+    rule = {
+        "name": "must_have_summary_text",
+        "pattern": r"\w+",
+        "fields": ["summary"],
+        "mode": "must_match",
+        "severity": "fail",
+    }
+    result = content_rules_validate({"summary": ""}, {"rules": [rule]})
+    assert result["ok"] is False
+    v = result["violations"][0]
+    assert v["rule"] == "must_have_summary_text"
+    assert "did not match" in v["message"]
+
+
+def test_content_rules_warn_severity_keeps_ok_true():
+    """A warn-severity violation is recorded but doesn't fail the result.
+    This is the hook for advisory-only rules — the dashboard chips show
+    WARN, but the event is still considered valid."""
+    rule = {
+        "name": "soft_warning",
+        "pattern": r"todo",
+        "fields": ["summary"],
+        "mode": "must_not_match",
+        "severity": "warn",
+    }
+    result = content_rules_validate(
+        {"summary": "todo: fix this later"},
+        {"rules": [rule]},
+    )
+    assert result["ok"] is True
+    assert len(result["violations"]) == 1
+    assert result["violations"][0]["severity"] == "warn"
+
+
+def test_content_rules_invalid_regex_reported_per_rule():
+    """A bad rule doesn't crash the whole pipeline — it emits its own
+    violation and other rules still run."""
+    rules = [
+        {
+            "name": "bad_pattern",
+            "pattern": "[unclosed",
+            "fields": ["summary"],
+            "mode": "must_not_match",
+            "severity": "fail",
+        },
+        DEFAULT_RULE_PACK[0],  # email_in_summary, should still run
+    ]
+    payload = _polaris_like_payload(summary="contact alice@example.com")
+    result = content_rules_validate(payload, {"rules": rules})
+    rule_names = sorted(v["rule"] for v in result["violations"])
+    assert rule_names == ["bad_pattern", "email_in_summary"]
+
+
+def test_content_rules_missing_pattern_reported():
+    rule = {"name": "no_pattern", "fields": ["summary"]}
+    result = content_rules_validate({"summary": "x"}, {"rules": [rule]})
+    assert result["ok"] is False
+    assert result["violations"][0]["rule"] == "no_pattern"
+    assert "missing 'pattern'" in result["violations"][0]["message"]
+
+
+def test_content_rules_missing_config_returns_violation():
+    """No rules in config -> validator reports it instead of silently
+    passing every payload."""
+    result = content_rules_validate({"summary": "x"}, {})
+    assert result["ok"] is False
+    assert result["violations"][0]["rule"] == "missing_config"
+
+
+def test_content_rules_missing_field_silently_yields_nothing():
+    """Schema-strict catches missing fields; content-rules treats them as
+    'no values to check' so a single payload going through both validators
+    doesn't double-report the same problem."""
+    rule = {
+        "name": "summary_no_email",
+        "pattern": r"@",
+        "fields": ["summary"],
+        "mode": "must_not_match",
+        "severity": "fail",
+    }
+    # No `summary` key at all — content-rules should pass, schema-strict
+    # would have caught the missing required field separately.
+    result = content_rules_validate({"other_field": "x"}, {"rules": [rule]})
+    assert result == {"ok": True, "violations": []}
+
+
+def test_content_rules_array_path_resolution():
+    """Verify the [] path syntax works on nested arrays."""
+    payload = {
+        "items": [
+            {"name": "alice"},
+            {"name": "bob"},
+            {"name": "DESTROY ALL"},
+        ],
+    }
+    rule = {
+        "name": "no_caps_yelling",
+        "pattern": r"[A-Z]{3,}",
+        "fields": ["items[].name"],
+        "mode": "must_not_match",
+        "severity": "fail",
+    }
+    result = content_rules_validate(payload, {"rules": [rule]})
+    assert result["ok"] is False
+    assert len(result["violations"]) == 1
+
+
+def test_content_rules_runs_via_registry():
+    payload = _polaris_like_payload()
+    result = run_validator(
+        "content_rules", payload, {"rules": DEFAULT_RULE_PACK}
+    )
+    assert result["ok"] is True
+
+
+def test_default_rule_pack_carries_canonical_rules():
+    """Demo and dashboard test fixtures depend on these names. If they
+    rename, the demo and the screenshots' alt text need updating too."""
+    rule_names = {r["name"] for r in DEFAULT_RULE_PACK}
+    assert rule_names == {"email_in_summary", "banned_destructive_verbs"}
+
+
+def test_redact_match_threshold():
+    # Short keywords kept verbatim
+    assert _redact_match("delete") == "delete"   # 6 chars
+    assert _redact_match("destroy") == "destroy"  # 7 chars
+    # Boundary: 8 chars triggers redaction
+    assert _redact_match("destroyer") == "d***"  # 9 chars
+    # Real-world PII-shaped match
+    assert _redact_match("alice@example.com") == "a***"
+    # Tiny inputs kept (no point redacting one char)
+    assert _redact_match("a") == "a"
+
+
+def test_registry_contains_content_rules():
+    assert "content_rules" in REGISTRY

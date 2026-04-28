@@ -12,7 +12,7 @@ them pre-emit and blocking, which unlocks "act, don't just plan"
 """
 from typing import Any, Callable
 
-from . import schema_strict
+from . import content_rules, schema_strict
 from ._types import ValidationResult, Violation
 
 
@@ -24,6 +24,7 @@ ValidatorFn = Callable[[Any, dict], ValidationResult]
 # migrating those rows.
 REGISTRY: dict[str, ValidatorFn] = {
     "schema_strict": schema_strict.validate,
+    "content_rules": content_rules.validate,
 }
 
 
