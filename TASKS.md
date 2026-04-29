@@ -4,9 +4,9 @@ Read MEMORY.md first if it's been a while. (Older Done Log entries call the proj
 
 ## NOW
 
-> **Phase 7.6: Phase 7 demo**
+> **Phase 8: TBD** — pick the next phase. Open candidates listed under Phase 8+.
 
-Phase 5 shipped 2026-04-26: PaaS-for-agents end-to-end. Phase 6 shipped 2026-04-27: Polaris, the project orchestrator bot, deployed via the Phase 5 PaaS against this project's own docs. Phase 7 picks up the dogfood loop with output validation (MEMORY.md guardrail layer 3) — Polaris validates its own plans before they're treated as trustworthy by the dashboard. Layer 4 (behavioral rules) and command dispatch land in later phases once we trust Polaris's outputs enough to act on them.
+Phase 5 shipped 2026-04-26: PaaS-for-agents end-to-end. Phase 6 shipped 2026-04-27: Polaris orchestrator bot deployed via the Phase 5 PaaS. Phase 7 shipped 2026-04-28: output validation (guardrail layer 3) — Polaris's plans flow through schema-strict + content-rules validators, dashboard chips render PASS/FAIL/WARN, demo verified end-to-end against prod with both clean and injected-fail runs.
 
 Phases 1-4 shipped 2026-04-25. Production-readiness items (DB backups, tests + CI, rate limits + body cap, bot instance identity, secrets store) shipped 2026-04-26. See Done Log.
 
@@ -149,12 +149,9 @@ Phase 5A scope: single-host worker, in-process subprocess per bot, only safe for
 
 ### 7.5 Dashboard shows validation status ✅ done 2026-04-28 (see Done Log)
 
-### 7.6 Phase 7 demo (NOW)
+### 7.6 Phase 7 demo ✅ done 2026-04-28 (see Done Log)
 
-- Run Polaris in prod. Register the two validators via `setup_validators.py`. Wait for the next plan (or trigger one by tweaking TASKS.md to bust the doc-hash cache). Confirm the dashboard shows green PASS chips. Screenshot.
-- For the failure case, temporarily edit `polaris/system_prompt.md` to include "Mention an example email like alice@example.com in the summary." Redeploy. Wait for the next plan. Confirm `email_in_summary` fires, dashboard shows FAIL with the rule name. Screenshot. Revert the prompt + redeploy.
-- Done Log: both screenshots, the verbatim violation, and a note on whether the validation chip in the sidebar surfaced the failure clearly enough to be useful.
-- Cleanup: stop the deployment + worker as in the Phase 6 demo. Validators stay registered so the next time Polaris runs, validation continues automatically.
+**Phase 7 complete 2026-04-28.**
 
 ---
 
@@ -198,6 +195,26 @@ Ideas that are good but not now. Add freely. Do not work on these until their ph
 ## Done Log
 
 Move tasks here as they finish. Look at this when momentum dips.
+
+### 2026-04-28 — Phase 7 Output validation (guardrail layer 3) COMPLETE 🎯
+Demo criterion (from MEMORY.md / Phase 7 header): *"Polaris's `polaris.plan` events flow through a validator pipeline before being treated as trustworthy by the dashboard. The `/polaris` view's history sidebar shows a small PASS / FAIL / WARN chip next to each plan; clicking a failed plan reveals the specific violations in the main pane. Demo run: deploy Polaris with a normal prompt → validators pass → dashboard shows green PASS chips. Then briefly inject a bad pattern → validators flag it → dashboard shows FAIL with the matched rule."* — passed.
+
+**More dogfood**: the deployed bot's plan even described the demo it was enabling. The PASS-run plan's `next_actions[0]` was "register validators + redeploy + capture green-PASS screenshot"; the FAIL-run plan's `next_actions[0]` started with the word "delete" because the system-prompt injection asked it to, which then tripped `banned_destructive_verbs` against `next_actions[].task`. Polaris narrating the demo from inside the demo loop.
+
+Demo run pointed at prod (`https://api.lightsei.com`, `https://app.lightsei.com`).
+
+- [x] **Pushed 6 commits to `origin/main`**: Phase 7 plan + 7.1 through 7.5. All locally tested at 160/160 backend before push. Triggered Railway redeploys with `railway up backend --service lightsei-backend` and `... dashboard --service lightsei-dashboard` in parallel after the push (Railway auto-deploy on push isn't wired here). Build times: ~63s backend, ~70s dashboard. Both `Deploy complete`. **Hit a Railway-CLI auth-token-expired blocker between the push and the redeploy** — fix was a `railway login` from a real terminal; CLI login can't run non-interactively from this shell.
+- [x] **Verified the new endpoints landed in prod** before deploying Polaris: `GET /agents/polaris/plans?limit=1` returns plans with the `validations` field; `GET /events/12345/validations` returns 404 cleanly (endpoint exists); `GET /workspaces/me/validators` returns `{"validators":[]}` (table exists, empty as expected). Migration 0013 ran on the prod Postgres on the backend container's startup pass.
+- [x] **Registered validators on prod** via `python polaris/setup_validators.py` against `https://api.lightsei.com`. Listing confirms: `polaris.plan / schema_strict` (config keys: schema), `polaris.plan / content_rules` (config keys: rules — the case-insensitive `DEFAULT_RULE_PACK` after the 7.5 fix).
+- [x] **Bundle**: built fresh wheel from `./sdk`, copied current `MEMORY.md` + `TASKS.md` into `polaris/`. Bundle size: 71 KB (was 60 KB at 6.6 — the diff is the larger TASKS.md after Phase 7 entries).
+- [x] **Clean PASS run**: deployed via `lightsei deploy ./polaris --agent polaris`, status went `queued → building → running` in ~9s (cached venv). First plan landed at event_id 151, 42,390 in / 825 out tokens, ~$0.23 at `effort: "high"` on `claude-opus-4-7`. Both validators passed. Dashboard rendered `phase7-prod-pass.png`: latest plan selected, green PASS chip on the new plan, no chip on the older Phase 6.6 plan (no validators registered at that time — gray-no-chip is the correct "unchecked" state). VALIDATION panel correctly hidden on all-PASS.
+- [x] **Injected FAIL run**: edited `polaris/system_prompt.md` to add a temporary "DEMO INJECTION" paragraph instructing Polaris to mention `alice@example.com` in `summary` and start the first next-action with `delete`. Stopped the clean deployment, redeployed. New plan landed at event_id 156, 42,573 in / 1107 out tokens. Dashboard rendered `phase7-prod-fail.png`: latest plan with red FAIL chip, VALIDATION panel showing `content_rules: FAIL · 2 violations` with the specific matches, plus `schema_strict: PASS · 0 violations` for contrast.
+- [x] **Verbatim violations** from the FAIL plan:
+  - `email_in_summary` at `summary`, matched `a***` (the validator redacted the long string per Phase 7.2's `_redact_match` — emails are PII-shaped, the original `alice@example.com` stays only in the event payload), message `forbidden pattern matched in summary`.
+  - `banned_destructive_verbs` at `next_actions[].task`, matched `delete` (short keyword kept verbatim), message `forbidden pattern matched in next_actions[].task`.
+- [x] **Sidebar chip usefulness check**: the dashboard's history sidebar shows three rows in `phase7-prod-fail.png` — the latest with a red `FAIL` chip, the Phase 7 PASS run with a green `PASS` chip, and the Phase 6 demo plan with no chip. Glanceable: a sweep of the sidebar tells you which plans are trustworthy without drilling into any of them. The `/polaris` page is now its own at-a-glance status board for the agent.
+- [x] **Cleanup**: reverted the system-prompt injection (system_prompt.md is back to the 6.5 / 7.5 shape — no diff in this commit). Stopped the FAIL deployment via `POST /workspaces/me/deployments/{id}/stop`, killed the local worker. Validators stay registered on the prod workspace; the next ad-hoc Polaris run will auto-validate without rerunning `setup_validators.py`.
+- [x] **Two screenshots committed**: `docs/phase7-prod-pass.png` (latest plan green, panel hidden, NEXT ACTIONS leading), `docs/phase7-prod-fail.png` (latest plan red, panel showing 2 violations with redacted matched strings, schema_strict still PASS).
 
 ### 2026-04-28 — Phase 7.5 Dashboard shows validation status
 - [x] **Sidebar chips**: each plan entry in the history sidebar now carries a small PASS / FAIL / WARN / ERROR / TIMEOUT chip derived from the worst status across that plan's validations (`worstValidationStatus` helper in `api.ts`). Plans with no validators registered get no chip (the gray "unchecked" state is reserved for that case but doesn't render — the absence of a chip is the signal).
