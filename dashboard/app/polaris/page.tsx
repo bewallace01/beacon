@@ -2,11 +2,16 @@
 
 import { useRouter } from "next/navigation";
 import Link from "next/link";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
+  fetchEventValidations,
   fetchPolarisPlans,
   PolarisPlan,
+  PolarisValidation,
+  PolarisViolation,
   UnauthorizedError,
+  ValidationStatus,
+  worstValidationStatus,
 } from "../api";
 import Header from "../Header";
 
@@ -202,7 +207,140 @@ function EmptyState() {
   );
 }
 
-function PlanDetail({ plan }: { plan: PolarisPlan }) {
+// Tailwind class sets for each validation status. Kept in one place so
+// the sidebar chip and the detail panel header use the same colors.
+const STATUS_STYLES: Record<
+  ValidationStatus | "unchecked",
+  { chip: string; label: string }
+> = {
+  pass: { chip: "bg-emerald-50 text-emerald-700 border-emerald-200", label: "PASS" },
+  warn: { chip: "bg-amber-50 text-amber-800 border-amber-200", label: "WARN" },
+  fail: { chip: "bg-red-50 text-red-700 border-red-200", label: "FAIL" },
+  error: { chip: "bg-red-50 text-red-700 border-red-200", label: "ERROR" },
+  timeout: { chip: "bg-amber-50 text-amber-800 border-amber-200", label: "TIMEOUT" },
+  unchecked: { chip: "bg-gray-50 text-gray-500 border-gray-200", label: "—" },
+};
+
+function StatusChip({
+  status,
+  className = "",
+}: {
+  status: ValidationStatus | "unchecked";
+  className?: string;
+}) {
+  const s = STATUS_STYLES[status];
+  return (
+    <span
+      className={
+        "inline-block px-1.5 py-0.5 rounded text-[10px] font-semibold tracking-wide border " +
+        s.chip + " " + className
+      }
+    >
+      {s.label}
+    </span>
+  );
+}
+
+function ViolationItem({ v }: { v: PolarisViolation }) {
+  return (
+    <li className="rounded-md bg-gray-50 border border-gray-200 px-3 py-2">
+      <div className="flex items-baseline gap-2">
+        <span className="text-xs font-mono text-gray-700 font-semibold">
+          {v.rule}
+        </span>
+        {v.path && (
+          <span className="text-[11px] font-mono text-gray-500">
+            at {v.path}
+          </span>
+        )}
+        {v.matched && (
+          <span className="text-[11px] font-mono text-gray-500">
+            matched <span className="text-amber-700">{v.matched}</span>
+          </span>
+        )}
+      </div>
+      <div className="text-xs text-gray-600 mt-1">{v.message}</div>
+    </li>
+  );
+}
+
+function ValidationsPanel({
+  validations,
+  loading,
+}: {
+  validations: PolarisValidation[] | null;
+  loading: boolean;
+}) {
+  if (validations === null && loading) {
+    return (
+      <section className="rounded-lg border border-gray-200 bg-white p-4">
+        <div className="text-xs text-gray-400">loading violations…</div>
+      </section>
+    );
+  }
+  if (!validations || validations.length === 0) return null;
+
+  // Don't render the panel at all when everything passed — the
+  // hero-band timestamp + payload speak for themselves.
+  const hasNonPass = validations.some((v) => v.status !== "pass");
+  if (!hasNonPass) return null;
+
+  return (
+    <section>
+      <h3 className="text-sm font-semibold tracking-wide text-gray-900 uppercase mb-3">
+        Validation
+      </h3>
+      <div className="space-y-3">
+        {validations.map((v) => (
+          <div
+            key={v.validator}
+            className="rounded-lg border border-gray-200 bg-white p-4"
+          >
+            <div className="flex items-baseline gap-2 mb-2">
+              <span className="font-mono text-sm font-semibold text-gray-900">
+                {v.validator}
+              </span>
+              <StatusChip status={v.status} />
+              <span className="text-xs text-gray-400">
+                {v.violations
+                  ? `${v.violations.length} ${
+                      v.violations.length === 1 ? "violation" : "violations"
+                    }`
+                  : v.violation_count !== undefined
+                  ? `${v.violation_count} ${
+                      v.violation_count === 1 ? "violation" : "violations"
+                    }`
+                  : ""}
+              </span>
+            </div>
+            {v.violations && v.violations.length > 0 && (
+              <ul className="space-y-1.5">
+                {v.violations.map((vi, i) => (
+                  <ViolationItem key={i} v={vi} />
+                ))}
+              </ul>
+            )}
+            {!v.violations && v.violation_count !== undefined && v.violation_count > 0 && (
+              <div className="text-xs text-gray-500 italic">
+                violation details loading…
+              </div>
+            )}
+          </div>
+        ))}
+      </div>
+    </section>
+  );
+}
+
+function PlanDetail({
+  plan,
+  validations,
+  loading,
+}: {
+  plan: PolarisPlan;
+  validations: PolarisValidation[] | null;
+  loading: boolean;
+}) {
   const p = plan.payload;
   const next = p.next_actions ?? [];
   const proms = p.parking_lot_promotions ?? [];
@@ -210,6 +348,7 @@ function PlanDetail({ plan }: { plan: PolarisPlan }) {
 
   return (
     <div className="space-y-8">
+      <ValidationsPanel validations={validations} loading={loading} />
       {p.parse_error && (
         <div className="border border-amber-200 bg-amber-50 rounded-md p-4 text-sm text-amber-900">
           <div className="font-medium mb-1">Plan parse failed</div>
@@ -369,6 +508,18 @@ export default function PolarisPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
+  // Cache of full violation details keyed by event_id. The list endpoint
+  // ships only summaries (validator + status + violation_count); when a
+  // plan is selected and has any non-PASS validations, we lazy-load full
+  // violations from /events/{id}/validations once and cache.
+  const [fullValidations, setFullValidations] = useState<
+    Map<number, PolarisValidation[]>
+  >(new Map());
+  const [validationsLoading, setValidationsLoading] = useState<Set<number>>(
+    new Set(),
+  );
+  const inFlightRef = useRef<Set<number>>(new Set());
+
   useEffect(() => {
     let alive = true;
     const tick = async () => {
@@ -401,6 +552,61 @@ export default function PolarisPage() {
     if (selectedEventId === null) return plans[0];
     return plans.find((p) => p.event_id === selectedEventId) ?? plans[0];
   }, [plans, selectedEventId]);
+
+  // Lazy-load full violations for the selected plan when it has any
+  // non-pass validation summaries. PASS-only plans never need a fetch
+  // (the panel doesn't render at all in that case).
+  useEffect(() => {
+    if (!selected) return;
+    const summaries = selected.validations ?? [];
+    const needsFetch = summaries.some((v) => v.status !== "pass");
+    if (!needsFetch) return;
+    if (fullValidations.has(selected.event_id)) return;
+    if (inFlightRef.current.has(selected.event_id)) return;
+
+    inFlightRef.current.add(selected.event_id);
+    setValidationsLoading((s) => new Set(s).add(selected.event_id));
+    let alive = true;
+    fetchEventValidations(selected.event_id)
+      .then((full) => {
+        if (!alive) return;
+        setFullValidations((prev) => {
+          const next = new Map(prev);
+          next.set(selected.event_id, full);
+          return next;
+        });
+      })
+      .catch((e) => {
+        if (e instanceof UnauthorizedError) router.replace("/login");
+        // Other errors: leave summaries showing, no detail panel; the
+        // chip on the sidebar still tells the user something failed.
+      })
+      .finally(() => {
+        inFlightRef.current.delete(selected.event_id);
+        setValidationsLoading((s) => {
+          const next = new Set(s);
+          next.delete(selected.event_id);
+          return next;
+        });
+      });
+    return () => {
+      alive = false;
+    };
+  }, [selected, fullValidations, router]);
+
+  // Resolve which validation list to feed PlanDetail: if we've fetched
+  // full details, prefer those; otherwise fall back to the summaries the
+  // list endpoint gave us (rendered as count-only chips).
+  const resolvedValidations = useMemo<PolarisValidation[] | null>(() => {
+    if (!selected) return null;
+    const full = fullValidations.get(selected.event_id);
+    if (full) return full;
+    return selected.validations ?? [];
+  }, [selected, fullValidations]);
+
+  const isValidationsLoading = selected
+    ? validationsLoading.has(selected.event_id)
+    : false;
 
   return (
     <main className="min-h-screen">
@@ -471,6 +677,7 @@ export default function PolarisPage() {
               <ul className="space-y-1">
                 {plans.map((p, idx) => {
                   const isSelected = selected?.event_id === p.event_id;
+                  const status = worstValidationStatus(p.validations);
                   return (
                     <li key={p.event_id}>
                       <button
@@ -489,12 +696,15 @@ export default function PolarisPage() {
                           )}
                           <span
                             className={
-                              "font-medium " +
+                              "font-medium flex-1 " +
                               (idx === 0 ? "" : "text-gray-700")
                             }
                           >
                             {fmtRelative(p.timestamp)}
                           </span>
+                          {status !== "unchecked" && (
+                            <StatusChip status={status} />
+                          )}
                         </div>
                         <div className="text-[11px] text-gray-400 font-mono mt-0.5 ml-5">
                           {fmtAbs(p.timestamp)}
@@ -511,7 +721,13 @@ export default function PolarisPage() {
 
             {/* Plan detail */}
             <div className="min-w-0">
-              {selected && <PlanDetail plan={selected} />}
+              {selected && (
+                <PlanDetail
+                  plan={selected}
+                  validations={resolvedValidations}
+                  loading={isValidationsLoading}
+                />
+              )}
             </div>
           </div>
         )}

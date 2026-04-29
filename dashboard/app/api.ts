@@ -631,13 +631,63 @@ export type PolarisPlanPayload = {
   parse_error?: string;
 };
 
+// Phase 7 validation. Status values match backend/validation_pipeline.py:
+//   pass    | every validator returned ok=True with no violations
+//   warn    | only warn-severity violations (advisory)
+//   fail    | at least one fail-severity violation
+//   error   | validator function raised, or config references an
+//             unknown validator (registry mismatch)
+//   timeout | cumulative validator budget exceeded; remaining skipped
+export type ValidationStatus = "pass" | "fail" | "warn" | "error" | "timeout";
+
+export type PolarisViolation = {
+  rule: string;
+  message: string;
+  // Validator-specific extras. Both undefined on plain violations.
+  path?: string;        // schema_strict: JSON pointer to the field
+  matched?: string;     // content_rules: matched substring (redacted by validator)
+  severity?: "fail" | "warn";  // content_rules
+};
+
+// Two shapes of validation depending on which endpoint produced it. The
+// /agents/{name}/plans list endpoint returns lite summaries (chip-sized);
+// /agents/{name}/latest-plan and /events/{id}/validations return full
+// details. Treated as a single optional-fields type so the rendering code
+// can branch on which fields are present.
+export type PolarisValidation = {
+  validator: string;
+  status: ValidationStatus;
+  violations?: PolarisViolation[];  // present on full responses
+  violation_count?: number;          // present on lite (list) responses
+};
+
 export type PolarisPlan = {
   event_id: number;
   run_id: string;
   agent_name: string;
   timestamp: string;
   payload: PolarisPlanPayload;
+  validations?: PolarisValidation[];  // present from Phase 7.4 onward
 };
+
+/** Worst status across a set of validations. Drives the sidebar chip. */
+export function worstValidationStatus(
+  validations: PolarisValidation[] | undefined,
+): ValidationStatus | "unchecked" {
+  if (!validations || validations.length === 0) return "unchecked";
+  const order: Record<ValidationStatus, number> = {
+    pass: 0,
+    warn: 1,
+    timeout: 2,
+    error: 3,
+    fail: 4,
+  };
+  let worst: ValidationStatus = "pass";
+  for (const v of validations) {
+    if (order[v.status] > order[worst]) worst = v.status;
+  }
+  return worst;
+}
 
 export async function fetchLatestPolarisPlan(
   agentName: string,
@@ -660,4 +710,17 @@ export async function fetchPolarisPlans(
     `/agents/${encodeURIComponent(agentName)}/plans?limit=${limit}`,
   )) as { plans: PolarisPlan[] };
   return body.plans;
+}
+
+/** Full violation details for a single event. Used when the user clicks a
+ *  historical plan in the sidebar — the list endpoint only ships
+ *  summaries, so we lazy-load full violations on selection. */
+export async function fetchEventValidations(
+  eventId: number,
+): Promise<PolarisValidation[]> {
+  const body = (await authedJson(`/events/${eventId}/validations`)) as {
+    event_id: number;
+    validations: PolarisValidation[];
+  };
+  return body.validations;
 }

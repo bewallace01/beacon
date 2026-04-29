@@ -361,6 +361,28 @@ def test_default_rule_pack_carries_canonical_rules():
     assert rule_names == {"email_in_summary", "banned_destructive_verbs"}
 
 
+def test_default_rule_pack_is_case_insensitive():
+    """`Delete` and `Alice@Example.COM` should fire the same as their
+    lowercase forms. Surfaced during the 7.5 dashboard demo: a Polaris
+    plan saying 'Delete the cache' didn't get flagged because the
+    default regex was case-sensitive. Locking in the (?i) prefix here."""
+    payload = {
+        "summary": "ping Alice@EXAMPLE.com if a deploy needs sign-off",
+        "next_actions": [
+            {"task": "Delete the orphaned cache rows", "blocked_by": None},
+            {"task": "DROP TABLE staging_runs", "blocked_by": None},
+        ],
+    }
+    result = content_rules_validate(payload, {"rules": DEFAULT_RULE_PACK})
+    assert result["ok"] is False
+    rule_names = sorted(v["rule"] for v in result["violations"])
+    assert rule_names == [
+        "banned_destructive_verbs",
+        "banned_destructive_verbs",
+        "email_in_summary",
+    ]
+
+
 def test_redact_match_threshold():
     # Short keywords kept verbatim
     assert _redact_match("delete") == "delete"   # 6 chars

@@ -4,7 +4,7 @@ Read MEMORY.md first if it's been a while. (Older Done Log entries call the proj
 
 ## NOW
 
-> **Phase 7.5: Dashboard shows validation status**
+> **Phase 7.6: Phase 7 demo**
 
 Phase 5 shipped 2026-04-26: PaaS-for-agents end-to-end. Phase 6 shipped 2026-04-27: Polaris, the project orchestrator bot, deployed via the Phase 5 PaaS against this project's own docs. Phase 7 picks up the dogfood loop with output validation (MEMORY.md guardrail layer 3) — Polaris validates its own plans before they're treated as trustworthy by the dashboard. Layer 4 (behavioral rules) and command dispatch land in later phases once we trust Polaris's outputs enough to act on them.
 
@@ -147,15 +147,9 @@ Phase 5A scope: single-host worker, in-process subprocess per bot, only safe for
 
 ### 7.4 Backend endpoints for validation results ✅ done 2026-04-28 (see Done Log)
 
-### 7.5 Dashboard shows validation status (NOW)
+### 7.5 Dashboard shows validation status ✅ done 2026-04-28 (see Done Log)
 
-- `/polaris` view additions:
-  - History sidebar: each plan entry gets a chip — green PASS / red FAIL / amber WARN, derived from the worst status across the event's validations (any FAIL → FAIL, any WARN → WARN, all PASS → PASS, none → "unchecked" gray dot).
-  - Plan detail pane: when the selected plan has any non-PASS validations, render a section above the next-actions block listing the validators and their violations (rule name + message, with the matched substring redacted to "***" for any rule flagged as PII-related).
-- API types: extend `PolarisPlan` in `dashboard/app/api.ts` with `validations: ValidationResult[]`.
-- Polls every 30s like the rest of the page; validation results show up as soon as the next backend pull lands them.
-
-### 7.6 Phase 7 demo
+### 7.6 Phase 7 demo (NOW)
 
 - Run Polaris in prod. Register the two validators via `setup_validators.py`. Wait for the next plan (or trigger one by tweaking TASKS.md to bust the doc-hash cache). Confirm the dashboard shows green PASS chips. Screenshot.
 - For the failure case, temporarily edit `polaris/system_prompt.md` to include "Mention an example email like alice@example.com in the summary." Redeploy. Wait for the next plan. Confirm `email_in_summary` fires, dashboard shows FAIL with the rule name. Screenshot. Revert the prompt + redeploy.
@@ -204,6 +198,18 @@ Ideas that are good but not now. Add freely. Do not work on these until their ph
 ## Done Log
 
 Move tasks here as they finish. Look at this when momentum dips.
+
+### 2026-04-28 — Phase 7.5 Dashboard shows validation status
+- [x] **Sidebar chips**: each plan entry in the history sidebar now carries a small PASS / FAIL / WARN / ERROR / TIMEOUT chip derived from the worst status across that plan's validations (`worstValidationStatus` helper in `api.ts`). Plans with no validators registered get no chip (the gray "unchecked" state is reserved for that case but doesn't render — the absence of a chip is the signal).
+- [x] **`ValidationsPanel`** in `polaris/page.tsx` renders above the NEXT ACTIONS block when the selected plan has any non-PASS validations. Per validator: validator name in monospace + status chip + violation count, then the violation list. Violations show `rule` (bold mono), `path` (for schema_strict), `matched` (redacted display from the validator), and the `message`. Hidden entirely on all-pass plans — at-a-glance "no panel = nothing wrong."
+- [x] **Lazy-load full violations**: the list endpoint ships only summaries (validator + status + violation_count, per Phase 7.4). When the user selects a plan with any non-PASS validation, `useEffect` fetches `/events/{event_id}/validations` once and caches the result in a `Map<event_id, PolarisValidation[]>`. Concurrent fetches deduped via a ref-tracked in-flight set so a fast click-through doesn't fire duplicate requests. PASS-only plans skip the fetch entirely (the panel doesn't render).
+- [x] **Status colors centralized**: a single `STATUS_STYLES` map drives both the sidebar chip and the panel-header chip so they always agree. PASS is emerald, WARN/TIMEOUT are amber, FAIL/ERROR are red.
+- [x] **api.ts additions**: `ValidationStatus` literal type, `PolarisViolation`, `PolarisValidation` (single optional-fields type that handles both lite-summary and full-detail shapes), `worstValidationStatus()` helper, `fetchEventValidations(eventId)`. `PolarisPlan.validations` is optional so the page handles old-shape responses gracefully if a deploy is half-rolled-out.
+- [x] **Bug caught while taking the demo screenshot**: the Phase 7.2 `DEFAULT_RULE_PACK` regexes were case-sensitive, so a Polaris plan saying "Delete the cache" didn't fire `banned_destructive_verbs` (only lowercase `delete` matched). Added `(?i)` inline-flag prefix to both default rules and a regression test (`test_default_rule_pack_is_case_insensitive` in `test_validators.py`). Operators expect "delete" / "Delete" / "DELETE" to all flag the same way; the case-sensitive default was the wrong call. Tests now: 27/27 in test_validators.py.
+- [x] **Verified live** against `docker compose up backend` + `npm run dev`. Seeded one clean plan and one fail plan (the fail plan's summary contains `alice@example.com` and its first next-action starts with `Delete the orphaned ...`). Both screenshots in `docs/`:
+  - `docs/phase7-polaris-validations-fail.png` — latest plan selected: hero band shows the suspect summary in serif, sidebar shows red FAIL chip on top entry + green PASS chip on the older one, VALIDATION panel renders above NEXT ACTIONS with `content_rules: FAIL · 2 violations` (`email_in_summary at summary matched a***`, `banned_destructive_verbs at next_actions[].task matched Delete`) + `schema_strict: PASS · 0 violations`.
+  - `docs/phase7-polaris-validations-pass.png` — clicked the older clean plan: VALIDATION panel correctly hidden (every status is PASS), page jumps straight to NEXT ACTIONS, sidebar still shows both chips so the user can see the status of the unselected fail plan at a glance.
+- Verified the dashboard build path: `npx tsc --noEmit` clean, `next build` produces `/polaris` at 7.14 KB First Load JS (was 5.4 KB; +1.7 KB for the validation panel + lazy-load logic).
 
 ### 2026-04-28 — Phase 7.4 Backend endpoints for validation results
 - [x] **`GET /events/{event_id}/validations`** returns the full validation rows for one event (validator + status + full violations[]). Workspace-scoped via two-step check (event exists, event.workspace_id matches) so cross-workspace event existence can't leak via timing — both branches return identical 404 detail.

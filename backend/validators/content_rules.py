@@ -33,14 +33,20 @@ from ._types import ValidationResult, Violation
 DEFAULT_RULE_PACK = [
     {
         "name": "email_in_summary",
-        "pattern": r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-z]{2,}",
+        # Case-insensitive: "Alice@Example.COM" should fire the same as
+        # the all-lowercase form. The `(?i)` inline flag keeps the rule
+        # config a single string field — no need for a separate flags arg
+        # in the rule schema.
+        "pattern": r"(?i)[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}",
         "fields": ["summary"],
         "mode": "must_not_match",
         "severity": "fail",
     },
     {
         "name": "banned_destructive_verbs",
-        "pattern": r"\b(delete|drop|truncate|destroy|nuke)\b",
+        # Same case-insensitive treatment: "Delete the cache" should
+        # fire as readily as "delete the cache".
+        "pattern": r"(?i)\b(delete|drop|truncate|destroy|nuke)\b",
         "fields": ["next_actions[].task"],
         "mode": "must_not_match",
         "severity": "fail",
