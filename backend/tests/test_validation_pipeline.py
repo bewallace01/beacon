@@ -433,3 +433,220 @@ def test_put_can_promote_existing_advisory_to_blocking(client, alice):
     listed = client.get("/workspaces/me/validators", headers=h).json()
     assert len(listed["validators"]) == 1
     assert listed["validators"][0]["mode"] == "blocking"
+
+
+# ---------- Phase 8.2: blocking pipeline ---------- #
+
+
+def test_blocking_validator_with_clean_payload_ingests_normally(client, alice):
+    """Promote schema_strict to blocking, post a payload that satisfies
+    the schema. Event lands, audit row records pass."""
+    from db import engine
+    from sqlalchemy.orm import Session as ORMSession
+
+    h = auth_headers(alice["api_key"]["plaintext"])
+    _register_with_mode(
+        client, h, "polaris.plan", "schema_strict",
+        {"schema": _PLAN_SCHEMA}, "blocking",
+    )
+    run_id = str(uuid.uuid4())
+    ev = _post_event(
+        client, h, run_id, "polaris", "polaris.plan", _ok_plan_payload()
+    )
+    with ORMSession(engine) as s:
+        row = s.execute(
+            select(EventValidation).where(EventValidation.event_id == ev["id"])
+        ).scalar_one()
+    assert row.status == "pass"
+
+
+def test_blocking_validator_with_bad_payload_returns_422_no_event(client, alice):
+    """The 8.2 happy-path case: blocking schema-strict + bad payload
+    returns 422, the event row is never inserted, no event_validations
+    rows are written."""
+    from db import engine
+    from sqlalchemy.orm import Session as ORMSession
+    from models import Event as EventModel
+
+    h = auth_headers(alice["api_key"]["plaintext"])
+    _register_with_mode(
+        client, h, "polaris.plan", "schema_strict",
+        {"schema": _PLAN_SCHEMA}, "blocking",
+    )
+    run_id = str(uuid.uuid4())
+    bad = _ok_plan_payload()
+    bad["summary"] = 123  # type: ignore[assignment]  # wrong type
+
+    r = client.post(
+        "/events",
+        json={
+            "run_id": run_id,
+            "agent_name": "polaris",
+            "kind": "polaris.plan",
+            "payload": bad,
+        },
+        headers=h,
+    )
+    assert r.status_code == 422
+    body = r.json()
+    detail = body["detail"]
+    assert detail["message"] == "event rejected by blocking validator"
+    assert any(v["rule"] == "type" for v in detail["violations"])
+    # Each violation carries the validator name so the SDK can attribute
+    # the failure when there are multiple registered validators.
+    assert all(v["validator"] == "schema_strict" for v in detail["violations"])
+
+    # No Event row should exist — rejection means the event never landed.
+    with ORMSession(engine) as s:
+        events = s.execute(
+            select(EventModel).where(
+                EventModel.run_id == run_id,
+                EventModel.kind == "polaris.plan",
+            )
+        ).scalars().all()
+        assert events == []
+        # And no event_validations rows either (no event_id to reference).
+        all_validations = s.execute(select(EventValidation)).scalars().all()
+        assert all_validations == []
+
+
+def test_advisory_validator_with_bad_payload_still_ingests(client, alice):
+    """Phase 7A regression: an advisory-mode validator failing on a bad
+    payload does NOT block — the event lands and the failure shows up
+    as an event_validations row with status='fail'."""
+    from db import engine
+    from sqlalchemy.orm import Session as ORMSession
+
+    h = auth_headers(alice["api_key"]["plaintext"])
+    _register_with_mode(
+        client, h, "polaris.plan", "schema_strict",
+        {"schema": _PLAN_SCHEMA}, "advisory",
+    )
+    bad = _ok_plan_payload()
+    bad["summary"] = 123  # type: ignore[assignment]
+    run_id = str(uuid.uuid4())
+    ev = _post_event(client, h, run_id, "polaris", "polaris.plan", bad)
+    with ORMSession(engine) as s:
+        row = s.execute(
+            select(EventValidation).where(EventValidation.event_id == ev["id"])
+        ).scalar_one()
+    assert row.status == "fail"
+
+
+def test_blocking_with_advisory_sibling_only_blocking_fails_block(client, alice):
+    """Mixed-mode: schema_strict (blocking) + content_rules (advisory)
+    on a payload that fails ONLY content_rules. Event ingests because
+    content_rules is advisory; both audit rows land."""
+    from db import engine
+    from sqlalchemy.orm import Session as ORMSession
+    from validators.content_rules import DEFAULT_RULE_PACK
+
+    h = auth_headers(alice["api_key"]["plaintext"])
+    _register_with_mode(
+        client, h, "polaris.plan", "schema_strict",
+        {"schema": _PLAN_SCHEMA}, "blocking",
+    )
+    _register_with_mode(
+        client, h, "polaris.plan", "content_rules",
+        {"rules": DEFAULT_RULE_PACK}, "advisory",
+    )
+    payload = _ok_plan_payload()
+    payload["summary"] = "ping alice@example.com when ready"  # trips email rule
+
+    run_id = str(uuid.uuid4())
+    ev = _post_event(client, h, run_id, "polaris", "polaris.plan", payload)
+    with ORMSession(engine) as s:
+        rows = s.execute(
+            select(EventValidation)
+            .where(EventValidation.event_id == ev["id"])
+            .order_by(EventValidation.validator_name)
+        ).scalars().all()
+    statuses = {r.validator_name: r.status for r in rows}
+    assert statuses == {"schema_strict": "pass", "content_rules": "fail"}
+
+
+def test_blocking_validator_with_error_status_does_not_block(client, alice, monkeypatch):
+    """Defensive: a buggy validator (raising an exception) gets
+    status='error' which is NOT a blocking status. The event ingests
+    and the error is recorded."""
+    from db import engine
+    from sqlalchemy.orm import Session as ORMSession
+
+    h = auth_headers(alice["api_key"]["plaintext"])
+    _register_with_mode(
+        client, h, "polaris.plan", "schema_strict",
+        {"schema": _PLAN_SCHEMA}, "blocking",
+    )
+
+    def boom(_payload, _config):
+        raise RuntimeError("simulated validator bug")
+
+    monkeypatch.setitem(__import__("validators").REGISTRY, "schema_strict", boom)
+
+    run_id = str(uuid.uuid4())
+    ev = _post_event(client, h, run_id, "polaris", "polaris.plan", _ok_plan_payload())
+    with ORMSession(engine) as s:
+        row = s.execute(
+            select(EventValidation).where(EventValidation.event_id == ev["id"])
+        ).scalar_one()
+    assert row.status == "error"
+    assert "simulated validator bug" in row.violations[0]["message"]
+
+
+def test_blocking_unknown_validator_does_not_block(client, alice, monkeypatch):
+    """Defensive: a config rows referencing a validator that's no
+    longer in the registry gets status='error' (rule='unknown_validator')
+    rather than blocking. Stale config can't take down ingestion."""
+    from db import engine
+    from sqlalchemy.orm import Session as ORMSession
+    import validators as v_mod
+
+    h = auth_headers(alice["api_key"]["plaintext"])
+    _register_with_mode(
+        client, h, "polaris.plan", "schema_strict",
+        {"schema": _PLAN_SCHEMA}, "blocking",
+    )
+
+    original = dict(v_mod.REGISTRY)
+    v_mod.REGISTRY.pop("schema_strict")
+    try:
+        run_id = str(uuid.uuid4())
+        ev = _post_event(client, h, run_id, "polaris", "polaris.plan", _ok_plan_payload())
+        with ORMSession(engine) as s:
+            row = s.execute(
+                select(EventValidation).where(EventValidation.event_id == ev["id"])
+            ).scalar_one()
+        assert row.status == "error"
+        assert row.violations[0]["rule"] == "unknown_validator"
+    finally:
+        v_mod.REGISTRY.update(original)
+
+
+def test_blocking_rejection_includes_all_failing_violations(client, alice):
+    """When a blocking schema fails, the 422 detail should include every
+    rule that failed — schema_strict reports each missing/wrong field
+    separately so the SDK can surface a complete picture."""
+    h = auth_headers(alice["api_key"]["plaintext"])
+    _register_with_mode(
+        client, h, "polaris.plan", "schema_strict",
+        {"schema": _PLAN_SCHEMA}, "blocking",
+    )
+    # Two distinct schema problems: summary wrong type AND a next_actions
+    # entry missing required `blocked_by`.
+    bad = {
+        "summary": 123,
+        "next_actions": [{"task": "x"}],
+    }
+    r = client.post(
+        "/events",
+        json={
+            "run_id": str(uuid.uuid4()),
+            "agent_name": "polaris",
+            "kind": "polaris.plan",
+            "payload": bad,
+        },
+        headers=auth_headers(alice["api_key"]["plaintext"]),
+    )
+    assert r.status_code == 422
+    rules = sorted(v["rule"] for v in r.json()["detail"]["violations"])
+    assert rules == ["required", "type"]

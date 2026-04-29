@@ -4,7 +4,7 @@ Read MEMORY.md first if it's been a while. (Older Done Log entries call the proj
 
 ## NOW
 
-> **Phase 8.2: Pipeline pre-emit blocking on FAIL**
+> **Phase 8.3: SDK graceful 422 handling**
 
 Phase 5 shipped 2026-04-26: PaaS-for-agents end-to-end. Phase 6 shipped 2026-04-27: Polaris orchestrator bot deployed via the Phase 5 PaaS. Phase 7 shipped 2026-04-28: output validation (guardrail layer 3, advisory) — Polaris's plans flow through schema-strict + content-rules validators, dashboard chips render PASS/FAIL/WARN. Phase 8 closes the layer-3 story by making validators BLOCKING when the operator opts in: a failing payload is rejected at ingestion, never lands. This is the "act, don't just plan" prerequisite — Polaris can safely dispatch commands once we trust the validation gate to catch bad outputs before they enter the system.
 
@@ -165,14 +165,9 @@ Phase 5A scope: single-host worker, in-process subprocess per bot, only safe for
 
 ### 8.1 Validator-mode migration + endpoint update ✅ done 2026-04-28 (see Done Log)
 
-### 8.2 Pipeline: pre-emit blocking on FAIL (NOW)
+### 8.2 Pipeline: pre-emit blocking on FAIL ✅ done 2026-04-28 (see Done Log)
 
-- Rewrite `POST /events`: split validators into `blocking` and `advisory` lists upfront. Run blocking validators **before** `session.add(event)`; if any returns `status=fail`, raise `HTTPException(422)` with `{"detail": "event rejected by blocking validator", "violations": [...]}`. Advisory validators run after insert as today.
-- The 422 response carries the list of violating rules so the SDK can log them usefully. Format: `{"detail": str, "violations": [{"validator": str, "rule": str, "message": str, ...}]}`.
-- Blocking-mode validators that return `error` or `timeout` do NOT block — only an explicit `fail`. A buggy validator can't take the API down.
-- Update existing `test_validation_pipeline.py` and add new cases: blocking + clean payload → 200, blocking + bad payload → 422 with violations in detail, advisory + bad payload → 200 with fail row (unchanged), mixed (one blocking + one advisory) + advisory-only-fail → 200, blocking validator with `error` status → 200 (don't block on validator bugs).
-
-### 8.3 SDK: graceful 422 handling
+### 8.3 SDK: graceful 422 handling (NOW)
 
 - The SDK's `lightsei.emit()` queues to a background thread that POSTs to `/events`. Currently any non-2xx response is logged at debug. Phase 8 elevates 422 specifically: log a `warning` with `validator: rule: message` for each violation in the response, increment an `event_rejected` counter, drop the event from the queue.
 - Crucially: **don't raise**. The user's bot keeps running. Per CLAUDE.md Hard Rule 4 ("Graceful degradation is non-negotiable. SDK code must never crash the user's program if Lightsei's backend is unreachable"), an explicit rejection is treated the same as a transient backend error from the bot's perspective — log + continue.
@@ -228,6 +223,15 @@ Ideas that are good but not now. Add freely. Do not work on these until their ph
 ## Done Log
 
 Move tasks here as they finish. Look at this when momentum dips.
+
+### 2026-04-28 — Phase 8.2 Pipeline pre-emit blocking on FAIL
+- [x] **`backend/validation_pipeline.py` refactored** into three stages: `evaluate_validators(session, workspace_id, event_kind, payload) → list[ValidationOutcome]` (pure compute, no DB writes), `find_blocking_failures(outcomes) → list[ValidationOutcome]` (filters to mode='blocking' AND status='fail'), and `write_validation_rows(session, event_id, outcomes) → None` (audit-trail persist). The split lets `POST /events` evaluate before deciding whether the event row gets created at all.
+- [x] **`POST /events` rewritten** to call evaluate → blocking-check → 422 if blocking fails (no event row created, no audit rows) → otherwise insert event → write audit rows. Phase 7A behavior is fully preserved when no validators are in blocking mode (the default): the blocking-check returns an empty list, evaluation results write as audit rows after insert, exactly like 7.3.
+- [x] **422 detail shape**: `{"detail": {"message": "event rejected by blocking validator", "violations": [{"validator": str, "rule": str, "message": str, ...}]}}`. The `validator` field is added per-violation by the pipeline (the underlying violation dict from the validator function doesn't know its own validator name); the SDK can use it to attribute failures across multiple registered validators in one rejection.
+- [x] **Defensive paths preserved**: blocking-mode validators returning `status='error'` (validator function raised) or `status='timeout'` (cumulative-budget exceeded) or `status='warn'` do NOT block. Only an explicit `status='fail'` blocks. A buggy or slow validator must not take the API down for a workspace.
+- [x] **`ValidationOutcome` dataclass** carries (validator_name, mode, status, violations). The mode comes along on every outcome so `find_blocking_failures` can filter without re-querying.
+- [x] **7 new tests** in `test_validation_pipeline.py` covering: blocking + clean payload ingests with pass row, blocking + bad payload returns 422 with no event row written, advisory + bad payload preserves Phase 7A (lands with fail row), mixed (blocking schema + advisory content_rules) on a content-rules-only failure ingests cleanly with both rows, blocking validator that throws gets `status='error'` and doesn't block, blocking validator referencing an unknown registry name gets `status='error'` (rule='unknown_validator') and doesn't block, blocking rejection includes all failing violations (multi-error schema fails report every distinct rule, not just the first).
+- Verified: `pytest tests/test_validation_pipeline.py -v` → **28/28** pass (was 21; +7 for blocking pipeline). Full backend suite → **173/173** (was 166; +7). Phase 7A regression coverage: every existing pipeline test continued to pass without modification — the new code path is opt-in via mode='blocking'.
 
 ### 2026-04-28 — Phase 8.1 Validator-mode migration + endpoint update
 - [x] **Migration `0014_validator_mode`** adds `mode VARCHAR(16) NOT NULL DEFAULT 'advisory'` to `validator_configs`. The `server_default` makes the upgrade atomic: every existing row is backfilled to `advisory` in the same DDL pass, so Phase 7A's behavior is unchanged on rollout. The default also covers the API path — a PUT that omits `mode` lands advisory, which is what Phase 7A clients send.

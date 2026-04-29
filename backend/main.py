@@ -47,7 +47,11 @@ from models import (
     WorkspaceSecret,
 )
 import validators
-from validation_pipeline import run_validators
+from validation_pipeline import (
+    evaluate_validators,
+    find_blocking_failures,
+    write_validation_rows,
+)
 from worker_auth import get_worker
 from passwords import hash_password, verify_password
 
@@ -251,6 +255,30 @@ def post_event(
     ts = event.timestamp or utcnow()
     ensure_agent(session, workspace_id, event.agent_name, ts)
 
+    # Phase 8.2: evaluate every registered validator pre-emit so the
+    # pipeline can short-circuit on a blocking-mode FAIL before the
+    # event row is created. Advisory results from the same pass get
+    # written as event_validations rows after the insert succeeds.
+    outcomes = evaluate_validators(
+        session, workspace_id, event.kind, event.payload
+    )
+    blockers = find_blocking_failures(outcomes)
+    if blockers:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "message": "event rejected by blocking validator",
+                "violations": [
+                    {
+                        "validator": o.validator_name,
+                        **v,
+                    }
+                    for o in blockers
+                    for v in o.violations
+                ],
+            },
+        )
+
     run = session.get(Run, event.run_id)
     if run is None:
         run = Run(
@@ -279,12 +307,10 @@ def post_event(
     session.add(row)
     session.flush()
 
-    # Phase 7.3: run any validators registered for this workspace + kind.
-    # Advisory in 7A — failures don't block ingestion. The pipeline
-    # writes event_validations rows in this same transaction, so a
-    # subsequent fetch sees the validation results and the event
-    # together.
-    run_validators(session, workspace_id, row)
+    # Phase 7.3 audit trail: persist every outcome (advisory and
+    # blocking-pass alike) so the dashboard's chips and the
+    # /events/{id}/validations endpoint have data to render.
+    write_validation_rows(session, row.id, outcomes)
 
     return {"id": row.id, "status": "ok"}
 
