@@ -4,9 +4,9 @@ Read MEMORY.md first if it's been a while. (Older Done Log entries call the proj
 
 ## NOW
 
-> **Phase 9: TBD** — pick the next phase. Open candidates listed under Phase 9+.
+> **Phase 9.0: Publish `lightsei` to PyPI**
 
-Phase 5 shipped 2026-04-26: PaaS-for-agents end-to-end. Phase 6 shipped 2026-04-27: Polaris orchestrator bot deployed via the Phase 5 PaaS. Phase 7 shipped 2026-04-28: output validation (advisory). Phase 8 shipped 2026-04-28: blocking validators — operators promote per-validator-config to `mode: blocking`, which makes a fail-status validator reject the event at ingestion (422 with violations, never lands). Layer 3 is now both visible AND enforceable. The "act, don't just plan" prerequisite is met.
+Phase 5 shipped 2026-04-26: PaaS-for-agents end-to-end. Phase 6 shipped 2026-04-27: Polaris orchestrator bot deployed via the Phase 5 PaaS. Phase 7 shipped 2026-04-28: output validation (advisory). Phase 8 shipped 2026-04-28: blocking validators. Phase 9 makes Lightsei a product people actually want to use: it tells you when something needs your attention instead of waiting for you to check.
 
 Phases 1-4 shipped 2026-04-25. Production-readiness items (DB backups, tests + CI, rate limits + body cap, bot instance identity, secrets store) shipped 2026-04-26. See Done Log.
 
@@ -175,15 +175,122 @@ Phase 5A scope: single-host worker, in-process subprocess per bot, only safe for
 
 ---
 
-## Phase 9+: TBD
+## Phase 9: Notifications (the "tell me when" layer)
 
-Open candidates for after blocking validators ship:
+**Demo at end of phase**: Register a Slack webhook URL on the workspace through the dashboard. Polaris's next plan lands in Slack with the summary + top next-action + a deep link back to `/polaris`. Validation FAIL → different message with the matched rule. Run failure → crash message. Repeat the same setup for Discord (different formatter, same triggers) to prove the channel-type abstraction works end-to-end. The user never opened the dashboard — they got everything they needed in their existing tools.
 
-- **Phase 9: act, don't just plan.** Polaris dispatches commands via `lightsei.send_command()` to user-deployed executor agents. Now safe — the validation gate catches bad outputs before they reach the dispatch path.
-- **Polaris 10: continuous eval (layer 5).** Judge-LLM scores past plans against actual outcomes.
+**Why this phase exists.** Lightsei's value today is invisible until you open the dashboard. A real product earns its place in your day by pinging you when something needs attention. For Polaris specifically, that's the thing that makes "an AI orchestrator for your project" feel like a useful service rather than a tool you remember to check: a daily plan summary in Slack/Discord, the kind of update a chief-of-staff would send.
+
+**Phase 9 scope**: ship five channel types in v1, all of them the "team chat" / structured-payload shape (paste a webhook URL, server POSTs the rendered message):
+
+- **Slack** — Block Kit format
+- **Discord** — embed format with color coding
+- **MS Teams** — Adaptive Card format (replaces deprecated MessageCard)
+- **Mattermost** — Slack-compat (reuses Slack formatter, separate type label)
+- **Generic webhook** — Lightsei JSON envelope for n8n / Zapier / custom systems
+
+Three trigger types: `polaris.plan`, `validation.fail`, `run_failed`.
+
+**Personal-channel notifications (WhatsApp / SMS / Telegram) explicitly deferred** to a separate phase, not because they aren't valuable but because they're a different beast: outbound to a phone number or chat ID, real API auth (not just a webhook URL), and Meta's template-approval cycle for WhatsApp non-reply messages. Bundling those three together via Twilio (WhatsApp + SMS) + Telegram bot API is a more coherent phase than wedging WhatsApp into Phase 9 — see Phase 10+ for the candidate.
+
+**Email** also deferred (needs SMTP infra; the five channels here cover the platforms most teams are already in). Per-channel subscriptions ship in v1 (each channel picks which triggers it cares about); per-trigger filters (e.g., "only ping for FAILs above severity X") deferred too. Adding any new channel later is one new formatter file + one type-registry entry — no migration, no dispatcher rewrite.
+
+### 9.0 Publish `lightsei` to PyPI (NOW)
+
+- Right now every external user has to figure out their own install (the wheel ships in `polaris/` and `examples/demo_deploy/` for our internal use). `pip install lightsei` 404s. Embarrassing gap; tiny task.
+- Register the project on PyPI under `lightsei` (or `lightsei-sdk` if `lightsei` is taken — verify). Set up an API token. Wire `python -m build && twine upload` into a GitHub Actions release flow that tags from `sdk/pyproject.toml`'s version.
+- Bump version to `0.1.0` (signal that this is a real release line, not a `0.0.1` placeholder).
+- Verify install in a fresh venv: `pip install lightsei` → `python -c "import lightsei; print(lightsei.__version__)"` works.
+- Update `polaris/requirements.txt` and `examples/demo_deploy/requirements.txt` to drop the local-wheel reference in favor of `lightsei>=0.1.0`. The bundled wheel files can be removed (kept in git history for reference). Future deploys no longer need the `python -m build` step.
+- Update `polaris/README.md` deploy section to reflect the simplified flow.
+
+### 9.1 Notification channels: schema + endpoints
+
+- New tables: `notification_channels` (id, workspace_id FK CASCADE, name, type [`slack`|`discord`|`teams`|`mattermost`|`webhook`], target_url, triggers JSONB array, secret_token nullable for HMAC signing, is_active, timestamps) and `notification_deliveries` (audit trail: channel_id FK, event_id FK, status [`sent`|`failed`|`skipped`], response_summary JSONB, attempt_count, sent_at). The audit table is what lets the dashboard show "you have 3 notifications subscribed; here's the last 50 deliveries."
+- Endpoints: `POST /workspaces/me/notifications` (create), `GET /workspaces/me/notifications` (list), `PATCH /workspaces/me/notifications/{id}` (update), `DELETE /workspaces/me/notifications/{id}`, `POST /workspaces/me/notifications/{id}/test` (fire a synthetic test notification). Plus `GET /workspaces/me/notifications/{id}/deliveries` for the audit view.
+- Type validation server-side: only known types accepted, future types added by registering a formatter (no migration needed).
+- Trigger config (JSONB): `{"on": ["polaris.plan", "validation.fail", "run_failed"]}`. Symbolic names rather than raw event kinds — keeps the API stable if we change underlying event names later. The dispatcher maps each symbolic trigger to its source signal.
+- Security: incoming webhook URLs are user-supplied secrets; never echo them back unmasked on GET. Mask to a "first-component...XXXX" style for Slack/Discord/Teams/Mattermost; full mask for generic webhooks.
+- Tests: CRUD round-trip per channel type, validation of trigger names, validation that unknown channel type 400s, masking on GET, cross-workspace isolation, test-fire endpoint.
+
+### 9.2 Channel-type registry + Slack / Discord / Teams / Mattermost formatters
+
+- New `backend/notifications/` package mirroring `backend/validators/`. The shape:
+  - `_types.py`: `Signal` (kind, payload, agent_name, dashboard_url, timestamp) and `Delivery` (status, response_summary).
+  - `slack.py`, `discord.py`, `teams.py`, `mattermost.py`, `webhook.py`: each exports a `format(signal, trigger) -> dict` (the platform-specific HTTP body) and a `post(url, body, secret_token=None) -> Delivery`.
+  - `__init__.py`: registry of `{type: (format_fn, post_fn)}` and a `dispatch(channel, signal, trigger)` entry point.
+- **Slack** uses Slack [Block Kit](https://api.slack.com/block-kit). Three message templates:
+  - **`polaris.plan`**: header "🌟 Polaris plan", section block with summary, numbered list of top 3 `next_actions`, footer "Generated {relative_time} • View full plan ↗" with the dashboard URL.
+  - **`validation.fail`**: header "🔴 Validation failed on {agent}", section showing the validator + rule + matched substring, footer "View plan ↗".
+  - **`run_failed`**: header "💥 {agent} run failed", section with the run id and (if available) the error message from the `run_failed` event payload, footer "View run ↗".
+- **Discord** uses Discord webhook [embeds](https://discord.com/developers/docs/resources/webhook#execute-webhook). Same three templates, rendered as Discord embed objects (title, description, fields, color = green for plan / amber for warn / red for fail+crash). Color is the visual cue Discord users expect that Slack handles via emoji.
+- **MS Teams** uses [Adaptive Cards 1.5+](https://adaptivecards.io/) wrapped in the Teams `application/vnd.microsoft.card.adaptive` envelope. Same three templates, rendered as Adaptive Card containers with TextBlock + FactSet + ActionSet (the "View" links become Action.OpenUrl). Microsoft has been deprecating the older MessageCard format and the legacy "Office 365 Connector" webhook URL — the supported URL today comes from the Teams app **Workflows** ("Post to a channel when a webhook request is received"). The formatter targets that flavor; we'll document it in the dashboard's URL hint so users grab the right one.
+- **Mattermost** is Slack-compatible: it accepts incoming webhooks in Slack's payload format. Reuse the Slack formatter with `mattermost` registered as a separate type (so the dashboard can label it correctly and we keep the door open for Mattermost-specific tweaks later).
+- HTTP timeout 2s per delivery; on failure write a `notification_deliveries` row with `status='failed'` and the response code/body for debugging. No retries in v1 — webhook providers usually have their own delivery guarantees, and our audit trail is enough to diagnose.
+- Tests per formatter: each emits the expected platform-specific shape (Slack Block Kit JSON, Discord embed JSON, Teams Adaptive Card JSON, Mattermost Slack-compat JSON); dispatcher routes to the right formatter by `channel.type`; 200/4xx/timeout each land their own audit row; failed delivery doesn't raise.
+
+### 9.3 Generic webhook channel
+
+- Same dispatcher abstraction; the webhook channel POSTs a Lightsei-defined JSON envelope that any system can consume:
+  ```
+  {
+    "type": "polaris.plan" | "validation.fail" | "run_failed",
+    "workspace_id": str,
+    "agent_name": str,
+    "timestamp": iso8601,
+    "dashboard_url": str,
+    "data": { event-specific fields: summary / next_actions / violations / error_message / etc. }
+  }
+  ```
+- HMAC signing: when `secret_token` is set on the channel, send `X-Lightsei-Signature: sha256=<hex>` and `X-Lightsei-Timestamp: <unix>` headers so the receiver can verify the payload + protect against replay. Standard webhook pattern.
+- The generic envelope is the integration path for anything not natively supported: Zapier, n8n, an internal job queue, MS Teams (until we ship a native Teams formatter), Telegram (via a thin proxy that forwards to the bot API), etc.
+- Tests: payload shape pinned, HMAC signature path, replay-protection timestamp present, missing-secret path (no signature header), failure rows recorded.
+
+### 9.4 Trigger pipeline: hook into event ingestion
+
+- After `POST /events` writes the event + validation rows, look up the workspace's active notification channels and figure out which triggers fire for this event:
+  - `event.kind == "polaris.plan"` → `polaris.plan` trigger
+  - any associated `event_validations` row has status `fail` → `validation.fail` trigger
+  - `event.kind == "run_failed"` → `run_failed` trigger
+- For each (channel, fired-trigger) pair: enqueue a `BackgroundTasks` job that calls the dispatcher. FastAPI runs background tasks after the response is returned, so /events stays fast. No new worker needed.
+- The audit row `notification_deliveries` writes asynchronously too; if the row insert fails (DB hiccup), log and move on.
+- Tests: pipeline tests mock the dispatcher and verify the right channels get the right signals; per-trigger filtering works; cross-workspace channels don't leak.
+
+### 9.5 Dashboard: Notifications panel
+
+- New `/account` tab (or sibling page `/notifications`) listing the workspace's channels with type icon, masked URL, active triggers, and a recent-deliveries summary ("3 sent, 0 failed in the last 24h").
+- "Add channel" form: name, type dropdown (Slack / Discord / Teams / Mattermost / Webhook), URL input (paste), checkboxes for triggers. Each type carries a hint pointing the user at where to get the webhook URL:
+  - **Slack**: "Slack → Apps → Incoming Webhooks → Add to a channel."
+  - **Discord**: "Discord channel settings → Integrations → Webhooks → New Webhook → Copy URL."
+  - **Teams**: "Teams channel → Workflows → 'Post to a channel when a webhook request is received' → Copy URL. (Old Office 365 Connector URLs no longer work as of 2025.)"
+  - **Mattermost**: "Mattermost → Integrations → Incoming Webhooks → Add."
+  - **Webhook**: "Any URL that accepts POST. Optional shared secret for HMAC verification."
+- "Send test" button per channel: hits the `/test` endpoint which fires a fake message immediately. The button changes to "✓ sent at HH:MM" so the user knows it worked.
+- Toggle channel active/inactive, edit triggers, delete channel.
+- Polished aesthetic: same plain-Tailwind look as `/account`, doesn't try to be as creative as `/polaris`.
+
+### 9.6 Phase 9 demo
+
+- Register at least three channels: Slack, Discord, and Teams (real webhook URLs from the user's actual workspaces). Optional: also Mattermost and a generic webhook (the latter pointing at webhook.site to verify the JSON envelope shape).
+- "Send test" on each → confirm formatted messages arrive on every platform with the platform-native styling (Slack Block Kit, Discord embed colors, Teams Adaptive Card).
+- Wait for the next Polaris tick (or trigger one by tweaking docs) → every registered channel receives the plan message in its respective format. The visual contrast across Slack / Discord / Teams is the proof the channel-type abstraction works end-to-end.
+- Inject a validation failure (re-use the Phase 8.4 tightened-schema trick on a non-blocking validator, OR fire a synthetic FAIL row via `/events` with a payload that trips content-rules) → every channel receives the validation message.
+- Manually post a `run_failed` event → every channel receives the crash message.
+- Done Log: screenshots of (a) the dashboard's Notifications panel listing every registered channel, (b)-(d) the messages received on each platform for each trigger (so the visual difference between Slack / Discord / Teams renderings is captured), and (e) a brief usefulness note ("would I rather have this in my day or have to remember to check the dashboard?").
+
+---
+
+## Phase 10+: TBD
+
+Open candidates for after notifications ship:
+
+- **Personal-channel notifications (WhatsApp + SMS + Telegram)**: pull the three "outbound to a phone number / chat ID" channels into one phase. They share an auth + recipient-management model that's meaningfully different from Phase 9's "paste a webhook URL" pattern. Twilio covers WhatsApp + SMS with one integration (auth tokens, sender-number provisioning, recipient phone numbers per send, Meta's 24-template-approval cycle for non-reply WhatsApp messages). Telegram is a separate bot API but lighter weight (bot token + chat IDs, no template approval). Each user's recipient identifier (their phone or chat id) becomes its own first-class object on the workspace, since these channels are 1:1 not 1:room. Bigger phase than 9; worth doing right.
+- **Phase 10: act, don't just plan.** Polaris dispatches commands via `lightsei.send_command()` to user-deployed executor agents. Now safe — the validation gate (Phase 8) catches bad outputs before they reach the dispatch path.
+- **Polaris N: continuous eval (layer 5).** Judge-LLM scores past plans against actual outcomes.
 - **Layer 4: behavioral rules.** Loop detection, runaway-token guards, escalating-permission patterns. Streaming detection across a run.
 - **Phase 5B**: cut single-host worker over to Fly Machines / Modal sandboxes (gates external users).
 - **Phase 8B**: SDK `emit_sync` + Polaris `polaris.plan_rejected` advisory events. Strengthens the rejection feedback loop so the dashboard can render rejected plans explicitly rather than relying on absence.
+- **Email notifications** (deferred from Phase 9): adds the obvious channel for users without team chat, but needs SMTP infra (Resend / Postmark / SES). Webhook path covers most existing wiring already.
 - GitHub OAuth + push-to-deploy.
 - Buildpacks / Dockerfile support beyond the fixed Python runtime.
 - N replicas + cron scheduling natively in the worker (Polaris currently does its own sleep loop; a real cron primitive would be cleaner).

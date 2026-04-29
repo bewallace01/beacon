@@ -22,7 +22,25 @@ from .errors import LightseiError, LightseiPolicyError
 
 _log = logging.getLogger("lightsei")
 
+# Resolved from package metadata at import time so there's a single source
+# of truth (pyproject.toml). Falls back to a sentinel when the package is
+# imported from a source tree that hasn't been installed (e.g., directly
+# from a git clone with `python -c "import lightsei"`); that path isn't
+# the normal install flow but shouldn't crash on import.
+try:
+    from importlib.metadata import PackageNotFoundError, version as _pkg_version
+    try:
+        __version__ = _pkg_version("lightsei")
+    except PackageNotFoundError:
+        __version__ = "0.0.0+source"
+    finally:
+        del _pkg_version
+        del PackageNotFoundError
+except Exception:  # pragma: no cover — extremely defensive
+    __version__ = "0.0.0+unknown"
+
 __all__ = [
+    "__version__",
     "init",
     "track",
     "emit",

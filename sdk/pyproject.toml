@@ -4,9 +4,34 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "lightsei"
-version = "0.0.1"
+version = "0.1.0"
 description = "Drop-in observability and guardrails for AI agents."
+readme = "README.md"
 requires-python = ">=3.11"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [
+    { name = "Bailey Wallace", email = "wallacebailey32@gmail.com" },
+]
+keywords = [
+    "ai",
+    "agents",
+    "llm",
+    "observability",
+    "guardrails",
+    "openai",
+    "anthropic",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Topic :: System :: Monitoring",
+]
 dependencies = [
     "httpx>=0.27",
     "watchfiles>=0.22",
@@ -14,6 +39,11 @@ dependencies = [
 
 [project.optional-dependencies]
 test = ["pytest>=8.0"]
+
+[project.urls]
+Homepage = "https://app.lightsei.com"
+Repository = "https://github.com/bewallace01/lightsei"
+Issues = "https://github.com/bewallace01/lightsei/issues"
 
 [project.scripts]
 lightsei = "lightsei._cli:main"
