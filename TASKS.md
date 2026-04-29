@@ -4,7 +4,7 @@ Read MEMORY.md first if it's been a while. (Older Done Log entries call the proj
 
 ## NOW
 
-> **Phase 7.3: Validation pipeline + event annotation**
+> **Phase 7.4: Backend endpoints for validation results**
 
 Phase 5 shipped 2026-04-26: PaaS-for-agents end-to-end. Phase 6 shipped 2026-04-27: Polaris, the project orchestrator bot, deployed via the Phase 5 PaaS against this project's own docs. Phase 7 picks up the dogfood loop with output validation (MEMORY.md guardrail layer 3) — Polaris validates its own plans before they're treated as trustworthy by the dashboard. Layer 4 (behavioral rules) and command dispatch land in later phases once we trust Polaris's outputs enough to act on them.
 
@@ -143,14 +143,9 @@ Phase 5A scope: single-host worker, in-process subprocess per bot, only safe for
 
 ### 7.2 Content-rules validator ✅ done 2026-04-28 (see Done Log)
 
-### 7.3 Validation pipeline + event annotation (NOW)
+### 7.3 Validation pipeline + event annotation ✅ done 2026-04-28 (see Done Log)
 
-- Migration: new table `event_validations` (id, event_id FK, validator_name, status `pass|fail|warn`, violations JSONB, created_at). One row per (event, validator) pair. Index on `(event_id, validator_name)`.
-- Validator registry: workspace-scoped map of `(event_kind, validator_name) → config`. Stored in a new `validator_configs` table or as a JSON column on `agents` — pick whichever feels cleaner once we look at the Phase 4 multi-tenancy model. Registration via `PUT /workspaces/me/validators/{event_kind}/{validator_name}`.
-- Pipeline: when `POST /events` ingests an event, look up the workspace's validators for that event's kind and run them synchronously after the insert. Cap to 200ms total per event (validators are pure functions; if any takes longer, treat as a `warn` with `timeout` reason and move on). Write results to `event_validations`.
-- Polaris setup script: small one-shot that registers schema-strict + content-rules for `polaris.plan` events on the calling workspace. Lives at `polaris/setup_validators.py` and is documented in `polaris/README.md` as a one-time post-deploy step.
-
-### 7.4 Backend endpoints for validation results
+### 7.4 Backend endpoints for validation results (NOW)
 
 - `GET /events/{event_id}/validations` — list validations for one event. Workspace-scoped. 404 if event not in workspace.
 - Extend `GET /agents/{name}/plans` and `GET /agents/{name}/latest-plan` to include a `validations` field on each returned plan (joined from `event_validations` by event_id). `validations: [{"validator": str, "status": str, "violations": [...]}]`.
@@ -214,6 +209,17 @@ Ideas that are good but not now. Add freely. Do not work on these until their ph
 ## Done Log
 
 Move tasks here as they finish. Look at this when momentum dips.
+
+### 2026-04-28 — Phase 7.3 Validation pipeline + event annotation
+- [x] **Migration `0013_validators`** creates two tables. `validator_configs` (workspace_id FK CASCADE, event_kind, validator_name, config JSONB, timestamps) — composite PK is the natural upsert key for `PUT /workspaces/me/validators/{event_kind}/{validator_name}`. `event_validations` (id BIGSERIAL, event_id FK CASCADE, validator_name, status, violations JSONB, created_at) with `UNIQUE(event_id, validator_name)` so a re-run can't double up rows. Indexes on the hot lookup paths.
+- [x] **`backend/models.py`** gets `ValidatorConfig` and `EventValidation` ORM models matching the migration shape. `UniqueConstraint` import added.
+- [x] **Pipeline at `backend/validation_pipeline.py`** wraps the pure-function validators in the actual ingestion path. `run_validators(session, workspace_id, event)` queries `validator_configs` for the workspace + event kind, runs each registered validator on the event payload, and inserts one `event_validations` row per validator. Status mapping: `ok=True && no violations → pass`, `ok=True && warn-severity violations → warn`, `ok=False → fail`. Two defensive paths: (a) registry-mismatch (config references a validator no longer in the registry) records `status='error'` with `rule='unknown_validator'`, (b) any exception from a validator function records `status='error'` with `rule='validator_exception'`. Cumulative time budget of 200ms across all validators on one event — anything past it gets `status='timeout'`. The function never raises, so a buggy validator can't take down `/events` for a workspace.
+- [x] **Hooked into `POST /events`** with one new line after `session.flush()`. Same transaction as the event insert, so a subsequent fetch sees the validations and the event together (no race on the dashboard).
+- [x] **Endpoints**: `PUT /workspaces/me/validators/{event_kind}/{validator_name}` (upsert config, idempotent), `GET /workspaces/me/validators` (list all for the workspace), `DELETE /workspaces/me/validators/{event_kind}/{validator_name}`. Path-param validation rejects malformed names with 400. PUT also rejects unknown validator names (must be in REGISTRY); DELETE deliberately accepts unknown names so an operator can clean up stale rows after a registry rename.
+- [x] **`polaris/setup_validators.py`**: one-shot script that registers schema_strict + content_rules for `polaris.plan` events on the calling workspace. Reads `LIGHTSEI_API_KEY` + `LIGHTSEI_BASE_URL` from env, hits the new endpoints with `urllib.request` (no SDK dep — keeps the script self-contained). The `POLARIS_PLAN_SCHEMA` defined in the script extends the bot's `submit_plan` input_schema with the bot-emitted envelope fields (text, doc_hashes, model, tokens_in, tokens_out). The content_rules config lifts `DEFAULT_RULE_PACK` from `backend/validators/content_rules.py` directly so the demo always runs against whatever the validator module ships with. Idempotent — calling twice just overwrites the existing config.
+- [x] **16 new tests in `backend/tests/test_validation_pipeline.py`** covering: PUT/GET/DELETE round-trip, PUT idempotency, PUT rejects unknown validator name, PUT rejects malformed event_kind / validator_name, DELETE 404 path, cross-workspace isolation on the config endpoints, unauthorized requests, POST /events triggers registered validators (clean-pass row), invalid payload produces fail row, no validators registered → no rows, multiple validators all run, registry-mismatch produces unknown_validator error row, validator-exception produces validator_exception error row, cross-workspace isolation in the pipeline (alice's config doesn't run on bob's events).
+- Verified: `pytest tests/test_validation_pipeline.py -v` → **16/16** pass. Full backend suite → **152/152** (was 136; +16). Pipeline + endpoints + setup script ready for the dashboard hookup in 7.4.
+- Schema-source decision: the 6.5 phase plan flagged the option of lifting Polaris's plan schema into a shared backend-importable spot. Took the alternate path the plan offered: Polaris registers its own schema as the validator config at deploy time, the backend stays agnostic. `setup_validators.py` is the schema's source of truth in the deployment path; the bot's `submit_plan` `input_schema` and the script's `POLARIS_PLAN_SCHEMA` overlap intentionally — they describe two related-but-distinct payloads (the model's tool input vs the bot-emitted envelope).
 
 ### 2026-04-28 — Phase 7.2 Content-rules validator
 - [x] **Second concrete validator at `backend/validators/content_rules.py`.** Config shape: `{"rules": [{"name": str, "pattern": str, "fields": [str], "mode": "must_not_match"|"must_match", "severity": "fail"|"warn"}]}`. Each rule names a regex, a list of field paths to check, and a mode/severity. The validator walks the named paths, runs the regex against any string values found, and emits a violation per match (or non-match, depending on mode).

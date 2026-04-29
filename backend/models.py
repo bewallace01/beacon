@@ -12,6 +12,7 @@ from sqlalchemy import (
     LargeBinary,
     String,
     Text,
+    UniqueConstraint,
 )
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
@@ -369,4 +370,74 @@ class Command(Base):
 
     __table_args__ = (
         Index("idx_commands_ws_agent_status", "workspace_id", "agent_name", "status"),
+    )
+
+
+class ValidatorConfig(Base):
+    """Workspace-scoped registration of (event_kind, validator_name) -> config.
+
+    The pipeline reads this on every POST /events to find which validators
+    to run against the new event's payload. Composite PK is the natural
+    upsert key for `PUT /workspaces/me/validators/{event_kind}/{validator_name}`.
+    """
+    __tablename__ = "validator_configs"
+
+    workspace_id: Mapped[str] = mapped_column(
+        String,
+        ForeignKey("workspaces.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    event_kind: Mapped[str] = mapped_column(String(64), primary_key=True)
+    validator_name: Mapped[str] = mapped_column(String(64), primary_key=True)
+    config: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+
+    __table_args__ = (
+        Index(
+            "idx_validator_configs_ws_kind", "workspace_id", "event_kind"
+        ),
+    )
+
+
+class EventValidation(Base):
+    """One row per (event, validator) pair recording the validation result.
+
+    Status is a free string ('pass'|'fail'|'warn' today, 'timeout'|'error'
+    once we wire those in). Violations is the list returned by the
+    validator function — the same shape as ValidationResult.violations,
+    persisted as JSONB so the dashboard can render whatever fields a
+    given validator chose to attach.
+
+    UNIQUE(event_id, validator_name) enforces "one row per event+validator";
+    the pipeline's INSERT path is "best effort, ignore conflicts" so a
+    re-run wouldn't double up rows.
+    """
+    __tablename__ = "event_validations"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    event_id: Mapped[int] = mapped_column(
+        BigInteger,
+        ForeignKey("events.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    validator_name: Mapped[str] = mapped_column(String(64), nullable=False)
+    status: Mapped[str] = mapped_column(String(16), nullable=False)
+    violations: Mapped[list[dict[str, Any]]] = mapped_column(
+        JSONB, nullable=False, default=list
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+
+    __table_args__ = (
+        UniqueConstraint(
+            "event_id", "validator_name",
+            name="uq_event_validations_event_validator",
+        ),
+        Index("idx_event_validations_event_id", "event_id"),
     )

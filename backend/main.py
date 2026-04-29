@@ -36,14 +36,18 @@ from models import (
     DeploymentBlob,
     DeploymentLog,
     Event,
+    EventValidation,
     Run,
     Session as SessionRow,
     Thread,
     ThreadMessage,
     User,
+    ValidatorConfig,
     Workspace,
     WorkspaceSecret,
 )
+import validators
+from validation_pipeline import run_validators
 from worker_auth import get_worker
 from passwords import hash_password, verify_password
 
@@ -162,6 +166,23 @@ class SecretSetIn(BaseModel):
     value: str = Field(min_length=0, max_length=8192)
 
 
+class ValidatorConfigSetIn(BaseModel):
+    """PUT /workspaces/me/validators/{event_kind}/{validator_name} body.
+
+    `config` is opaque to the API — its shape is validator-specific
+    (schema-strict expects `{schema: ...}`, content-rules expects
+    `{rules: [...]}`) and the validator function is what defines the
+    contract. We just store and forward.
+    """
+    config: dict[str, Any] = Field(default_factory=dict)
+
+
+# Validator-name and event-kind validation: same character class as
+# secret names since these strings end up in URL paths and DB columns.
+VALIDATOR_NAME_RE = _re.compile(r"^[a-z][a-z0-9_]{0,63}$")
+EVENT_KIND_RE = _re.compile(r"^[a-z][a-z0-9_.]{0,63}$")
+
+
 def _serialize_api_key(k: ApiKey) -> dict[str, Any]:
     return {
         "id": k.id,
@@ -251,6 +272,14 @@ def post_event(
     )
     session.add(row)
     session.flush()
+
+    # Phase 7.3: run any validators registered for this workspace + kind.
+    # Advisory in 7A — failures don't block ingestion. The pipeline
+    # writes event_validations rows in this same transaction, so a
+    # subsequent fetch sees the validation results and the event
+    # together.
+    run_validators(session, workspace_id, row)
+
     return {"id": row.id, "status": "ok"}
 
 
@@ -680,6 +709,113 @@ def delete_secret(
     row = session.get(WorkspaceSecret, (workspace_id, name))
     if row is None:
         raise HTTPException(status_code=404, detail="secret not found")
+    session.delete(row)
+    session.flush()
+    return {"status": "ok"}
+
+
+# ---------- /workspaces/me/validators (Phase 7.3) ---------- #
+
+
+def _validate_validator_path(event_kind: str, validator_name: str) -> None:
+    if not EVENT_KIND_RE.match(event_kind):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "event_kind must match [a-z][a-z0-9_.]{0,63} (lowercase, "
+                "may contain dots and underscores)"
+            ),
+        )
+    if not VALIDATOR_NAME_RE.match(validator_name):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "validator_name must match [a-z][a-z0-9_]{0,63} (lowercase, "
+                "alphanumeric + underscore)"
+            ),
+        )
+    if validator_name not in validators.REGISTRY:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"validator {validator_name!r} is not in the registry; "
+                f"known: {sorted(validators.REGISTRY)}"
+            ),
+        )
+
+
+def _serialize_validator_config(c: ValidatorConfig) -> dict[str, Any]:
+    return {
+        "event_kind": c.event_kind,
+        "validator_name": c.validator_name,
+        "config": c.config,
+        "created_at": c.created_at.isoformat(),
+        "updated_at": c.updated_at.isoformat(),
+    }
+
+
+@app.get("/workspaces/me/validators")
+def list_validators(
+    session: Session = Depends(get_session),
+    workspace_id: str = Depends(get_workspace_id),
+) -> dict[str, Any]:
+    rows = session.execute(
+        select(ValidatorConfig)
+        .where(ValidatorConfig.workspace_id == workspace_id)
+        .order_by(ValidatorConfig.event_kind, ValidatorConfig.validator_name)
+    ).scalars().all()
+    return {"validators": [_serialize_validator_config(c) for c in rows]}
+
+
+@app.put("/workspaces/me/validators/{event_kind}/{validator_name}")
+def put_validator(
+    event_kind: str,
+    validator_name: str,
+    body: ValidatorConfigSetIn,
+    session: Session = Depends(get_session),
+    workspace_id: str = Depends(get_workspace_id),
+) -> dict[str, Any]:
+    _validate_validator_path(event_kind, validator_name)
+    now = utcnow()
+    existing = session.get(
+        ValidatorConfig, (workspace_id, event_kind, validator_name)
+    )
+    if existing is None:
+        row = ValidatorConfig(
+            workspace_id=workspace_id,
+            event_kind=event_kind,
+            validator_name=validator_name,
+            config=body.config,
+            created_at=now,
+            updated_at=now,
+        )
+        session.add(row)
+    else:
+        existing.config = body.config
+        existing.updated_at = now
+        row = existing
+    session.flush()
+    return _serialize_validator_config(row)
+
+
+@app.delete("/workspaces/me/validators/{event_kind}/{validator_name}")
+def delete_validator(
+    event_kind: str,
+    validator_name: str,
+    session: Session = Depends(get_session),
+    workspace_id: str = Depends(get_workspace_id),
+) -> dict[str, str]:
+    # Path-format validation only — we don't require the validator to be
+    # in the registry to delete its row. If a registry entry was renamed
+    # in code, the old config row is now orphaned and the operator needs
+    # to be able to clean it up.
+    if not EVENT_KIND_RE.match(event_kind) or not VALIDATOR_NAME_RE.match(validator_name):
+        raise HTTPException(status_code=400, detail="malformed event_kind or validator_name")
+    row = session.get(
+        ValidatorConfig, (workspace_id, event_kind, validator_name)
+    )
+    if row is None:
+        raise HTTPException(status_code=404, detail="validator config not found")
     session.delete(row)
     session.flush()
     return {"status": "ok"}
