@@ -617,11 +617,16 @@ export type PolarisDrift = {
 };
 
 export type PolarisPlanPayload = {
-  text: string;
-  doc_hashes: { memory_md: string; tasks_md: string };
-  model: string;
-  tokens_in: number;
-  tokens_out: number;
+  // Most fields are nominally required but marked optional here so the
+  // dashboard renders gracefully when a non-conforming polaris.plan
+  // event lands (e.g., a manual /events POST during testing, or a
+  // schema-rejected payload from before 8.2 went blocking). The page
+  // handles missing fields via `?? defaults` rather than crashing.
+  text?: string;
+  doc_hashes?: { memory_md?: string; tasks_md?: string };
+  model?: string;
+  tokens_in?: number;
+  tokens_out?: number;
   // present on successful parse
   summary?: string;
   next_actions?: PolarisNextAction[];

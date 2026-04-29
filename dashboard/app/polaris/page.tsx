@@ -474,15 +474,15 @@ function PlanDetail({
             <div className="text-[10px] uppercase tracking-wider text-gray-400 mb-1">
               Model
             </div>
-            <div className="font-mono text-gray-700">{p.model}</div>
+            <div className="font-mono text-gray-700">{p.model ?? "—"}</div>
           </div>
           <div>
             <div className="text-[10px] uppercase tracking-wider text-gray-400 mb-1">
               Tokens (in / out)
             </div>
             <div className="font-mono text-gray-700">
-              {p.tokens_in.toLocaleString()} /{" "}
-              {p.tokens_out.toLocaleString()}
+              {(p.tokens_in ?? 0).toLocaleString()} /{" "}
+              {(p.tokens_out ?? 0).toLocaleString()}
             </div>
           </div>
         </div>
