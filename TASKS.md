@@ -4,9 +4,9 @@ Read MEMORY.md first if it's been a while. (Older Done Log entries call the proj
 
 ## NOW
 
-> **Phase 9.1: Notification channels — schema + endpoints**
+> **Phase 9.2: Channel-type registry + Slack / Discord / Teams / Mattermost formatters**
 
-Phase 5 shipped 2026-04-26: PaaS-for-agents end-to-end. Phase 6 shipped 2026-04-27: Polaris orchestrator bot deployed via the Phase 5 PaaS. Phase 7 shipped 2026-04-28: output validation (advisory). Phase 8 shipped 2026-04-28: blocking validators. Phase 9 makes Lightsei a product people actually want to use: it tells you when something needs your attention instead of waiting for you to check. **9.0 published `lightsei` to PyPI 2026-04-29 — `pip install lightsei` now just works.**
+Phase 5 shipped 2026-04-26: PaaS-for-agents end-to-end. Phase 6 shipped 2026-04-27: Polaris orchestrator bot deployed via the Phase 5 PaaS. Phase 7 shipped 2026-04-28: output validation (advisory). Phase 8 shipped 2026-04-28: blocking validators. Phase 9 makes Lightsei a product people actually want to use: it tells you when something needs your attention instead of waiting for you to check. **9.0 published `lightsei` to PyPI 2026-04-29 — `pip install lightsei` now just works.** **9.1 shipped the notification-channel API surface 2026-04-29 — CRUD, masking, audit trail, test-fire stub.**
 
 Phases 1-4 shipped 2026-04-25. Production-readiness items (DB backups, tests + CI, rate limits + body cap, bot instance identity, secrets store) shipped 2026-04-26. See Done Log.
 
@@ -197,16 +197,9 @@ Three trigger types: `polaris.plan`, `validation.fail`, `run_failed`.
 
 ### 9.0 Publish `lightsei` to PyPI ✅ done 2026-04-29 (see Done Log)
 
-### 9.1 Notification channels: schema + endpoints
+### 9.1 Notification channels: schema + endpoints ✅ done 2026-04-29 (see Done Log)
 
-- New tables: `notification_channels` (id, workspace_id FK CASCADE, name, type [`slack`|`discord`|`teams`|`mattermost`|`webhook`], target_url, triggers JSONB array, secret_token nullable for HMAC signing, is_active, timestamps) and `notification_deliveries` (audit trail: channel_id FK, event_id FK, status [`sent`|`failed`|`skipped`], response_summary JSONB, attempt_count, sent_at). The audit table is what lets the dashboard show "you have 3 notifications subscribed; here's the last 50 deliveries."
-- Endpoints: `POST /workspaces/me/notifications` (create), `GET /workspaces/me/notifications` (list), `PATCH /workspaces/me/notifications/{id}` (update), `DELETE /workspaces/me/notifications/{id}`, `POST /workspaces/me/notifications/{id}/test` (fire a synthetic test notification). Plus `GET /workspaces/me/notifications/{id}/deliveries` for the audit view.
-- Type validation server-side: only known types accepted, future types added by registering a formatter (no migration needed).
-- Trigger config (JSONB): `{"on": ["polaris.plan", "validation.fail", "run_failed"]}`. Symbolic names rather than raw event kinds — keeps the API stable if we change underlying event names later. The dispatcher maps each symbolic trigger to its source signal.
-- Security: incoming webhook URLs are user-supplied secrets; never echo them back unmasked on GET. Mask to a "first-component...XXXX" style for Slack/Discord/Teams/Mattermost; full mask for generic webhooks.
-- Tests: CRUD round-trip per channel type, validation of trigger names, validation that unknown channel type 400s, masking on GET, cross-workspace isolation, test-fire endpoint.
-
-### 9.2 Channel-type registry + Slack / Discord / Teams / Mattermost formatters
+### 9.2 Channel-type registry + Slack / Discord / Teams / Mattermost formatters (NOW)
 
 - New `backend/notifications/` package mirroring `backend/validators/`. The shape:
   - `_types.py`: `Signal` (kind, payload, agent_name, dashboard_url, timestamp) and `Delivery` (status, response_summary).
@@ -315,6 +308,15 @@ Ideas that are good but not now. Add freely. Do not work on these until their ph
 ## Done Log
 
 Move tasks here as they finish. Look at this when momentum dips.
+
+### 2026-04-29 — Phase 9.1 Notification channels: schema + endpoints
+- [x] **Migration `0015_notifications`**: two new tables. `notification_channels` (id UUID, workspace_id FK CASCADE, name, type, target_url, triggers JSONB, secret_token nullable, is_active default true, timestamps) with `UNIQUE(workspace_id, name)` so a workspace can't have two channels with the same name. `notification_deliveries` (id BIGSERIAL, channel_id FK CASCADE, event_id FK SET NULL, trigger, status, response_summary JSONB nullable, attempt_count, sent_at) with `idx_notification_deliveries_channel_sent (channel_id, sent_at)` for the "show me the last N deliveries for this channel" hot path. The `event_id` SET NULL ON DELETE choice lets an event purge keep the audit history intact.
+- [x] **ORM models** `NotificationChannel` and `NotificationDelivery` in `backend/models.py`. Type and status fields stored as free strings (not enums) so adding a new channel type or delivery status is a code-only change.
+- [x] **`_mask_url` helper** keeps scheme + host so the user can recognize the platform but truncates the path so the secret token (which lives in the path for Slack / Discord / Teams / Mattermost incoming webhooks) is never echoed back. Last 4 chars of the path are kept as a "yes, this is the URL I added" identity hint. Returns `***` cleanly on garbage input rather than crashing.
+- [x] **Seven endpoints** under `/workspaces/me/notifications/...`: `GET` (list), `POST` (create), `GET /{id}`, `PATCH /{id}`, `DELETE /{id}`, `POST /{id}/test` (test-fire), `GET /{id}/deliveries`. Validate `type` against `{slack, discord, teams, mattermost, webhook}` and `triggers` against `{polaris.plan, validation.fail, run_failed}` — anything else 400s with a clear message. PATCH refuses to change `type` (delete + recreate to switch platforms). Conflict on duplicate name → 409. Channel not in workspace → 404 with the same detail string regardless of "doesn't exist" vs "exists in a different workspace" so cross-workspace existence can't leak via timing.
+- [x] **`/test` is a stub for now**: writes a `notification_deliveries` row with `status='skipped'` and `response_summary={"reason": "phase_9_2_will_deliver", ...}`. The endpoint shape is final; 9.2 swaps the inside without touching the API surface or the dashboard's "send test" button.
+- [x] **22 new tests** in `backend/tests/test_notifications.py` covering: round-trip per channel type (Slack, Discord, Teams, Mattermost, webhook); secret_token never echoed (full-response substring search); type validation; trigger validation; name format validation; 409 on duplicate name (create + patch-rename); cross-workspace isolation on list / get / delete / deliveries; PATCH updates triggers + is_active; PATCH clears secret_token explicitly via null vs leaves alone when not in fields_set; `_mask_url` unit test against real-world URL shapes; deliveries endpoint pagination + limit validation; unauthorized.
+- Verified: `pytest tests/test_notifications.py -v` → **22/22** pass. Full backend suite → **195/195** (was 173 before 9.1; +22 notifications, no regressions). The notification-channel API surface is settled and ready for 9.2 to plug the dispatcher in.
 
 ### 2026-04-29 — Phase 9.0 Publish `lightsei` to PyPI
 - [x] **`lightsei` 0.1.0 live on PyPI**: https://pypi.org/project/lightsei/. Both wheel + sdist uploaded. License declared as MIT (PEP 639 license-expression form). Verified via `pip install lightsei` in a fresh venv → `lightsei.__version__ = "0.1.0"`, `init/track/emit` all importable, `lightsei deploy --help` works as a console script.

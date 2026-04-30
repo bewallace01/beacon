@@ -37,6 +37,8 @@ from models import (
     DeploymentLog,
     Event,
     EventValidation,
+    NotificationChannel,
+    NotificationDelivery,
     Run,
     Session as SessionRow,
     Thread,
@@ -956,6 +958,308 @@ def delete_validator(
     session.delete(row)
     session.flush()
     return {"status": "ok"}
+
+
+# ---------- /workspaces/me/notifications (Phase 9.1) ---------- #
+#
+# Channels are workspace-scoped, unique-by-name, with a list of symbolic
+# triggers (`polaris.plan`, `validation.fail`, `run_failed`). The actual
+# dispatcher (HTTP-out + per-platform formatter) lands in 9.2; the
+# `/test` endpoint here writes a 'skipped' delivery row in the meantime
+# so the API surface is settled before 9.2 fills it in.
+
+NOTIFICATION_CHANNEL_TYPES = ("slack", "discord", "teams", "mattermost", "webhook")
+NOTIFICATION_TRIGGERS = ("polaris.plan", "validation.fail", "run_failed")
+NOTIFICATION_NAME_RE = _re.compile(r"^[A-Za-z][A-Za-z0-9_\- ]{0,63}$")
+
+
+class NotificationChannelCreateIn(BaseModel):
+    name: str = Field(min_length=1, max_length=64)
+    type: str
+    target_url: str = Field(min_length=1, max_length=2048)
+    triggers: list[str] = Field(default_factory=list)
+    secret_token: Optional[str] = Field(default=None, max_length=512)
+    is_active: bool = True
+
+
+class NotificationChannelPatchIn(BaseModel):
+    name: Optional[str] = Field(default=None, min_length=1, max_length=64)
+    target_url: Optional[str] = Field(default=None, min_length=1, max_length=2048)
+    triggers: Optional[list[str]] = None
+    secret_token: Optional[str] = Field(default=None, max_length=512)
+    is_active: Optional[bool] = None
+
+
+def _validate_channel_input(name: str, type_: str, triggers: list[str]) -> None:
+    if not NOTIFICATION_NAME_RE.match(name):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "name must match [A-Za-z][A-Za-z0-9_\\- ]{0,63} (start with "
+                "a letter; alphanumeric, underscore, hyphen, space)"
+            ),
+        )
+    if type_ not in NOTIFICATION_CHANNEL_TYPES:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"type must be one of {list(NOTIFICATION_CHANNEL_TYPES)}; "
+                f"got {type_!r}"
+            ),
+        )
+    bad_triggers = [t for t in triggers if t not in NOTIFICATION_TRIGGERS]
+    if bad_triggers:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"unknown triggers {bad_triggers}; allowed values are "
+                f"{list(NOTIFICATION_TRIGGERS)}"
+            ),
+        )
+
+
+def _mask_url(url: str) -> str:
+    """Mask a webhook URL for display.
+
+    Keeps scheme + host so the user can recognize the platform; truncates
+    the path so the secret token (which lives in the path for Slack/
+    Discord/Teams/Mattermost) is never echoed back. Last 4 chars of the
+    path are kept as a "yes, this is the URL I added" identity hint.
+    """
+    from urllib.parse import urlparse
+    try:
+        p = urlparse(url)
+    except Exception:
+        return "***"
+    if not p.scheme or not p.netloc:
+        return "***"
+    path = p.path or ""
+    if len(path) > 8:
+        masked_path = f"{path[:4]}...{path[-4:]}"
+    elif path:
+        masked_path = "/***"
+    else:
+        masked_path = ""
+    return f"{p.scheme}://{p.netloc}{masked_path}"
+
+
+def _serialize_notification_channel(c: NotificationChannel) -> dict[str, Any]:
+    return {
+        "id": c.id,
+        "name": c.name,
+        "type": c.type,
+        "target_url_masked": _mask_url(c.target_url),
+        "triggers": list(c.triggers or []),
+        "has_secret_token": c.secret_token is not None,
+        "is_active": c.is_active,
+        "created_at": c.created_at.isoformat(),
+        "updated_at": c.updated_at.isoformat(),
+    }
+
+
+def _serialize_notification_delivery(d: NotificationDelivery) -> dict[str, Any]:
+    return {
+        "id": d.id,
+        "channel_id": d.channel_id,
+        "event_id": d.event_id,
+        "trigger": d.trigger,
+        "status": d.status,
+        "response_summary": d.response_summary or {},
+        "attempt_count": d.attempt_count,
+        "sent_at": d.sent_at.isoformat(),
+    }
+
+
+@app.get("/workspaces/me/notifications")
+def list_notification_channels(
+    session: Session = Depends(get_session),
+    workspace_id: str = Depends(get_workspace_id),
+) -> dict[str, Any]:
+    rows = session.execute(
+        select(NotificationChannel)
+        .where(NotificationChannel.workspace_id == workspace_id)
+        .order_by(NotificationChannel.created_at)
+    ).scalars().all()
+    return {"channels": [_serialize_notification_channel(c) for c in rows]}
+
+
+@app.post("/workspaces/me/notifications")
+def create_notification_channel(
+    body: NotificationChannelCreateIn,
+    session: Session = Depends(get_session),
+    workspace_id: str = Depends(get_workspace_id),
+) -> dict[str, Any]:
+    _validate_channel_input(body.name, body.type, body.triggers)
+    # Conflict check is a separate query rather than relying on the
+    # UNIQUE constraint exception so the error message is cleaner and
+    # we don't pollute the SQL session with a rolled-back insert.
+    existing = session.execute(
+        select(NotificationChannel)
+        .where(
+            NotificationChannel.workspace_id == workspace_id,
+            NotificationChannel.name == body.name,
+        )
+    ).scalar_one_or_none()
+    if existing is not None:
+        raise HTTPException(
+            status_code=409,
+            detail=f"a notification channel named {body.name!r} already exists",
+        )
+    now = utcnow()
+    row = NotificationChannel(
+        id=str(uuid.uuid4()),
+        workspace_id=workspace_id,
+        name=body.name,
+        type=body.type,
+        target_url=body.target_url,
+        triggers=body.triggers,
+        secret_token=body.secret_token,
+        is_active=body.is_active,
+        created_at=now,
+        updated_at=now,
+    )
+    session.add(row)
+    session.flush()
+    return _serialize_notification_channel(row)
+
+
+@app.get("/workspaces/me/notifications/{channel_id}")
+def get_notification_channel(
+    channel_id: str,
+    session: Session = Depends(get_session),
+    workspace_id: str = Depends(get_workspace_id),
+) -> dict[str, Any]:
+    row = session.get(NotificationChannel, channel_id)
+    if row is None or row.workspace_id != workspace_id:
+        raise HTTPException(status_code=404, detail="channel not found")
+    return _serialize_notification_channel(row)
+
+
+@app.patch("/workspaces/me/notifications/{channel_id}")
+def patch_notification_channel(
+    channel_id: str,
+    body: NotificationChannelPatchIn,
+    session: Session = Depends(get_session),
+    workspace_id: str = Depends(get_workspace_id),
+) -> dict[str, Any]:
+    row = session.get(NotificationChannel, channel_id)
+    if row is None or row.workspace_id != workspace_id:
+        raise HTTPException(status_code=404, detail="channel not found")
+    fields = body.model_fields_set
+    # Re-validate any changed fields. Type isn't patchable here — to
+    # change platform, delete and recreate. Keeps the upsert path tight.
+    if "name" in fields and body.name is not None:
+        if not NOTIFICATION_NAME_RE.match(body.name):
+            raise HTTPException(status_code=400, detail="malformed name")
+        if body.name != row.name:
+            conflict = session.execute(
+                select(NotificationChannel)
+                .where(
+                    NotificationChannel.workspace_id == workspace_id,
+                    NotificationChannel.name == body.name,
+                )
+            ).scalar_one_or_none()
+            if conflict is not None:
+                raise HTTPException(
+                    status_code=409,
+                    detail=f"channel name {body.name!r} already exists",
+                )
+            row.name = body.name
+    if "triggers" in fields and body.triggers is not None:
+        bad = [t for t in body.triggers if t not in NOTIFICATION_TRIGGERS]
+        if bad:
+            raise HTTPException(
+                status_code=400,
+                detail=f"unknown triggers {bad}",
+            )
+        row.triggers = body.triggers
+    if "target_url" in fields and body.target_url is not None:
+        row.target_url = body.target_url
+    if "secret_token" in fields:
+        # Explicit None means "clear"; missing means "leave alone".
+        row.secret_token = body.secret_token
+    if "is_active" in fields and body.is_active is not None:
+        row.is_active = body.is_active
+    row.updated_at = utcnow()
+    session.flush()
+    return _serialize_notification_channel(row)
+
+
+@app.delete("/workspaces/me/notifications/{channel_id}")
+def delete_notification_channel(
+    channel_id: str,
+    session: Session = Depends(get_session),
+    workspace_id: str = Depends(get_workspace_id),
+) -> dict[str, str]:
+    row = session.get(NotificationChannel, channel_id)
+    if row is None or row.workspace_id != workspace_id:
+        raise HTTPException(status_code=404, detail="channel not found")
+    session.delete(row)
+    session.flush()
+    return {"status": "ok"}
+
+
+@app.post("/workspaces/me/notifications/{channel_id}/test")
+def test_notification_channel(
+    channel_id: str,
+    session: Session = Depends(get_session),
+    workspace_id: str = Depends(get_workspace_id),
+) -> dict[str, Any]:
+    """Fire a synthetic test message at this channel.
+
+    Phase 9.1 stub: writes a `notification_deliveries` row with
+    `status='skipped'` and a placeholder reason. Phase 9.2 replaces
+    this with a real dispatch (formatter + HTTP-out + status from
+    response). The endpoint shape stays identical across the swap so
+    the dashboard's "send test" button doesn't change.
+    """
+    row = session.get(NotificationChannel, channel_id)
+    if row is None or row.workspace_id != workspace_id:
+        raise HTTPException(status_code=404, detail="channel not found")
+    delivery = NotificationDelivery(
+        channel_id=row.id,
+        event_id=None,
+        trigger="test",
+        status="skipped",
+        response_summary={
+            "reason": "phase_9_2_will_deliver",
+            "message": (
+                "Notification channels are configured but the dispatcher "
+                "lands in Phase 9.2. This is a stub delivery row."
+            ),
+        },
+        attempt_count=0,
+        sent_at=utcnow(),
+    )
+    session.add(delivery)
+    session.flush()
+    return {
+        "delivery": _serialize_notification_delivery(delivery),
+        "note": "stub — actual dispatch lands in Phase 9.2",
+    }
+
+
+@app.get("/workspaces/me/notifications/{channel_id}/deliveries")
+def list_notification_deliveries(
+    channel_id: str,
+    limit: int = 50,
+    session: Session = Depends(get_session),
+    workspace_id: str = Depends(get_workspace_id),
+) -> dict[str, Any]:
+    if limit < 1 or limit > 200:
+        raise HTTPException(status_code=400, detail="limit must be 1..200")
+    row = session.get(NotificationChannel, channel_id)
+    if row is None or row.workspace_id != workspace_id:
+        raise HTTPException(status_code=404, detail="channel not found")
+    rows = session.execute(
+        select(NotificationDelivery)
+        .where(NotificationDelivery.channel_id == channel_id)
+        .order_by(NotificationDelivery.sent_at.desc(), NotificationDelivery.id.desc())
+        .limit(limit)
+    ).scalars().all()
+    return {
+        "deliveries": [_serialize_notification_delivery(d) for d in rows]
+    }
 
 
 # ---------- /workspaces/me/deployments (Phase 5.1) ---------- #

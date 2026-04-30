@@ -4,6 +4,7 @@ from typing import Any, Optional
 
 from sqlalchemy import (
     BigInteger,
+    Boolean,
     DateTime,
     Float,
     ForeignKey,
@@ -455,4 +456,92 @@ class EventValidation(Base):
             name="uq_event_validations_event_validator",
         ),
         Index("idx_event_validations_event_id", "event_id"),
+    )
+
+
+class NotificationChannel(Base):
+    """A registered destination for outbound notifications.
+
+    One row per (workspace, channel name). The `type` field selects the
+    formatter + dispatcher branch (Phase 9.2 ships slack/discord/teams/
+    mattermost/webhook). `triggers` is a JSONB list of symbolic trigger
+    names ('polaris.plan', 'validation.fail', 'run_failed') the channel
+    cares about — the dispatcher matches against this on each event
+    ingestion (Phase 9.4).
+
+    `target_url` is user-supplied and treated as a secret: the API masks
+    it before returning. `secret_token` is optional HMAC material for
+    the generic webhook channel; native chat platforms don't use it
+    (their URL is itself the credential).
+    """
+    __tablename__ = "notification_channels"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    workspace_id: Mapped[str] = mapped_column(
+        String, ForeignKey("workspaces.id", ondelete="CASCADE"), nullable=False
+    )
+    name: Mapped[str] = mapped_column(String(64), nullable=False)
+    type: Mapped[str] = mapped_column(String(32), nullable=False)
+    target_url: Mapped[str] = mapped_column(Text, nullable=False)
+    triggers: Mapped[list[str]] = mapped_column(JSONB, nullable=False, default=list)
+    secret_token: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+
+    __table_args__ = (
+        UniqueConstraint(
+            "workspace_id", "name",
+            name="uq_notification_channels_workspace_name",
+        ),
+        Index("idx_notification_channels_workspace", "workspace_id"),
+    )
+
+
+class NotificationDelivery(Base):
+    """Audit row for one outbound notification attempt.
+
+    Written by the test-fire endpoint (Phase 9.1) and the pipeline
+    dispatcher (Phase 9.4) for every (channel, signal) pair. Status is
+    a free string so a future delivery state ('queued', 'rate_limited')
+    is a code-only change. `response_summary` carries whatever the
+    HTTP-out captured: status code, response body snippet, error
+    message, or — in the 9.1 stub path — `{"reason": "phase_9_2_will_deliver"}`.
+
+    `event_id` is nullable because test-fires don't have a triggering
+    event. ON DELETE SET NULL on the FK so an event purge doesn't
+    cascade-delete the audit history.
+    """
+    __tablename__ = "notification_deliveries"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    channel_id: Mapped[str] = mapped_column(
+        String,
+        ForeignKey("notification_channels.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    event_id: Mapped[Optional[int]] = mapped_column(
+        BigInteger,
+        ForeignKey("events.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    trigger: Mapped[str] = mapped_column(String(64), nullable=False)
+    status: Mapped[str] = mapped_column(String(16), nullable=False)
+    response_summary: Mapped[Optional[dict[str, Any]]] = mapped_column(
+        JSONB, nullable=True
+    )
+    attempt_count: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    sent_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+
+    __table_args__ = (
+        Index(
+            "idx_notification_deliveries_channel_sent",
+            "channel_id", "sent_at",
+        ),
     )
