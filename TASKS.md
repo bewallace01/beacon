@@ -4,9 +4,9 @@ Read MEMORY.md first if it's been a while. (Older Done Log entries call the proj
 
 ## NOW
 
-> **Phase 9.0: Publish `lightsei` to PyPI**
+> **Phase 9.1: Notification channels — schema + endpoints**
 
-Phase 5 shipped 2026-04-26: PaaS-for-agents end-to-end. Phase 6 shipped 2026-04-27: Polaris orchestrator bot deployed via the Phase 5 PaaS. Phase 7 shipped 2026-04-28: output validation (advisory). Phase 8 shipped 2026-04-28: blocking validators. Phase 9 makes Lightsei a product people actually want to use: it tells you when something needs your attention instead of waiting for you to check.
+Phase 5 shipped 2026-04-26: PaaS-for-agents end-to-end. Phase 6 shipped 2026-04-27: Polaris orchestrator bot deployed via the Phase 5 PaaS. Phase 7 shipped 2026-04-28: output validation (advisory). Phase 8 shipped 2026-04-28: blocking validators. Phase 9 makes Lightsei a product people actually want to use: it tells you when something needs your attention instead of waiting for you to check. **9.0 published `lightsei` to PyPI 2026-04-29 — `pip install lightsei` now just works.**
 
 Phases 1-4 shipped 2026-04-25. Production-readiness items (DB backups, tests + CI, rate limits + body cap, bot instance identity, secrets store) shipped 2026-04-26. See Done Log.
 
@@ -195,14 +195,7 @@ Three trigger types: `polaris.plan`, `validation.fail`, `run_failed`.
 
 **Email** also deferred (needs SMTP infra; the five channels here cover the platforms most teams are already in). Per-channel subscriptions ship in v1 (each channel picks which triggers it cares about); per-trigger filters (e.g., "only ping for FAILs above severity X") deferred too. Adding any new channel later is one new formatter file + one type-registry entry — no migration, no dispatcher rewrite.
 
-### 9.0 Publish `lightsei` to PyPI (NOW)
-
-- Right now every external user has to figure out their own install (the wheel ships in `polaris/` and `examples/demo_deploy/` for our internal use). `pip install lightsei` 404s. Embarrassing gap; tiny task.
-- Register the project on PyPI under `lightsei` (or `lightsei-sdk` if `lightsei` is taken — verify). Set up an API token. Wire `python -m build && twine upload` into a GitHub Actions release flow that tags from `sdk/pyproject.toml`'s version.
-- Bump version to `0.1.0` (signal that this is a real release line, not a `0.0.1` placeholder).
-- Verify install in a fresh venv: `pip install lightsei` → `python -c "import lightsei; print(lightsei.__version__)"` works.
-- Update `polaris/requirements.txt` and `examples/demo_deploy/requirements.txt` to drop the local-wheel reference in favor of `lightsei>=0.1.0`. The bundled wheel files can be removed (kept in git history for reference). Future deploys no longer need the `python -m build` step.
-- Update `polaris/README.md` deploy section to reflect the simplified flow.
+### 9.0 Publish `lightsei` to PyPI ✅ done 2026-04-29 (see Done Log)
 
 ### 9.1 Notification channels: schema + endpoints
 
@@ -322,6 +315,18 @@ Ideas that are good but not now. Add freely. Do not work on these until their ph
 ## Done Log
 
 Move tasks here as they finish. Look at this when momentum dips.
+
+### 2026-04-29 — Phase 9.0 Publish `lightsei` to PyPI
+- [x] **`lightsei` 0.1.0 live on PyPI**: https://pypi.org/project/lightsei/. Both wheel + sdist uploaded. License declared as MIT (PEP 639 license-expression form). Verified via `pip install lightsei` in a fresh venv → `lightsei.__version__ = "0.1.0"`, `init/track/emit` all importable, `lightsei deploy --help` works as a console script.
+- [x] **Trusted publishing (OIDC)**: registered `bewallace01/lightsei` + `release.yml` + `pypi` environment as a trusted publisher on PyPI. No API token to manage anywhere — every future tag-push that matches `v*` triggers the workflow, which builds + twine-checks + uploads via `pypa/gh-action-pypi-publish`.
+- [x] **Release-tag verification step**: the workflow refuses to publish if the git tag doesn't match `sdk/pyproject.toml`'s version. Catches the common "tagged but forgot to bump" mistake before it ships a non-existent version.
+- [x] **`sdk/pyproject.toml`** filled out for a real release line: bumped to `0.1.0`, added readme/authors/keywords/classifiers/project URLs/license + license-files. Was previously a one-line stub that would've shown "License: UNKNOWN" on the PyPI page — that's the kind of detail that makes the difference between a project people install and one they hesitate over.
+- [x] **`sdk/lightsei/__init__.py`** exposes `__version__` resolved from `importlib.metadata` so the version is single-source-of-truth from `pyproject.toml`. Sentinel fallback (`"0.0.0+source"` / `"0.0.0+unknown"`) for source-tree imports that aren't installed — non-blocking.
+- [x] **MIT LICENSE** at repo root + duplicated into `sdk/` so `license-files = ["LICENSE"]` resolves at build time and the wheel ships with it. 2026 Bailey Wallace.
+- [x] **`sdk/README.md`**: user-facing landing page that PyPI renders on the package detail. Two-line setup (`pip install lightsei` + `lightsei.init(...)`), what-you-get section covering observability/guardrails/Polaris/notifications/graceful-degradation, configuration, deploy command, links. Distinct from the repo-root `README.md` which has dev instructions.
+- [x] **Bundles cleaned up**: `polaris/lightsei-0.0.1-py3-none-any.whl` and `examples/demo_deploy/lightsei-0.0.1-py3-none-any.whl` deleted; their `requirements.txt` files now read `lightsei>=0.1.0` instead of the local-wheel reference. Future Polaris deploys no longer need the `python -m build && cp` dance — `pip install lightsei` from PyPI in the worker venv is enough.
+- [x] **`polaris/README.md`** deploy section rewritten to reflect the simplified flow.
+- Real bug caught locally before tagging: PEP 639 metadata 2.4 needs `packaging>=24.2` — older twine versions fail validation with "unrecognized field 'license-expression'". Local fix was `pip install --upgrade packaging`; GHA installs latest on each run so the prod release path is unaffected. Mentioned in the commit message so future me / future contributors don't trip over it.
 
 ### 2026-04-28 — Phase 8 Blocking validators (guardrail layer 3, pre-emit) COMPLETE 🎯
 Demo criterion (from MEMORY.md / Phase 8 header): *"Promote `polaris.plan / schema_strict` from advisory to blocking. Inject a schema-failing case. Deploy. The worker's logs show a `422` from `POST /events` with the violation list, the bot keeps running (graceful), and **no new plan appears in the dashboard's `/polaris` view** — the rejected event never landed. The demo's evidence is what *isn't* there: a rejected event leaves no trace in the events table, just a worker-log line."* — passed.

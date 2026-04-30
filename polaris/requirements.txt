@@ -1,2 +1,2 @@
-./lightsei-0.0.1-py3-none-any.whl
+lightsei>=0.1.0
 anthropic>=0.40.0

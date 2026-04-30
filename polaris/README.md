@@ -35,20 +35,23 @@ rules, continuous eval) come online.
 From the repo root:
 
 ```bash
-# 1. Build the wheel
-cd sdk && python -m build --wheel && cp dist/*.whl ../polaris/ && cd ..
-
-# 2. Copy the project's planning docs into the bundle
+# 1. Copy the project's planning docs into the bundle. The bot reads
+#    them from POLARIS_DOCS_DIR (default ".") at runtime.
 cp MEMORY.md TASKS.md polaris/
 
-# 3. Set workspace secrets (one-time)
+# 2. Set workspace secrets (one-time, via the dashboard at
+#    app.lightsei.com/account or PUT /workspaces/me/secrets/{NAME}):
 #    LIGHTSEI_API_KEY  — your bk_* workspace key (the bot uses this to
 #                        post events back to Lightsei)
 #    ANTHROPIC_API_KEY — used by the bot for the planning call
 
-# 4. Deploy
+# 3. Deploy. The worker pip-installs lightsei from PyPI on first run.
 lightsei deploy ./polaris --agent polaris
 ```
+
+Phase 9.0 (2026-04-29) published `lightsei` to PyPI, so deploys no
+longer need to build + bundle a local wheel — `requirements.txt`
+just lists `lightsei>=0.1.0` and pip handles the rest.
 
 Optional env overrides on the deployed bot:
 - `POLARIS_POLL_S` (default 3600) — seconds between ticks
