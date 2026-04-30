@@ -729,3 +729,109 @@ export async function fetchEventValidations(
   };
   return body.validations;
 }
+
+// ---------- Notifications (Phase 9.5) ---------- //
+
+// Pinned to the backend's NOTIFICATION_CHANNEL_TYPES + TRIGGERS lists.
+// Renaming any of these requires a coordinated backend migration.
+export type ChannelType =
+  | "slack"
+  | "discord"
+  | "teams"
+  | "mattermost"
+  | "webhook";
+
+export type TriggerName = "polaris.plan" | "validation.fail" | "run_failed";
+
+export type NotificationChannel = {
+  id: string;
+  name: string;
+  type: ChannelType;
+  // The backend masks the URL — Slack-style "https://hooks.slack.com/services/T01...XXXX"
+  // for native chat, full mask for generic webhooks. Never the full URL.
+  target_url_masked: string;
+  triggers: TriggerName[];
+  has_secret_token: boolean;
+  is_active: boolean;
+  created_at: string;
+  updated_at: string;
+};
+
+export type NotificationDelivery = {
+  id: number;
+  channel_id: string;
+  event_id: number | null;
+  trigger: string;
+  // 'sent' | 'failed' on the happy path; 'skipped' from old (pre-9.2)
+  // rows; 'error'/'timeout' from defensive paths.
+  status: string;
+  response_summary: Record<string, unknown>;
+  attempt_count: number;
+  sent_at: string;
+};
+
+export async function fetchNotificationChannels(): Promise<NotificationChannel[]> {
+  const body = (await authedJson(`/workspaces/me/notifications`)) as {
+    channels: NotificationChannel[];
+  };
+  return body.channels;
+}
+
+export async function createNotificationChannel(input: {
+  name: string;
+  type: ChannelType;
+  target_url: string;
+  triggers: TriggerName[];
+  secret_token?: string;
+  is_active?: boolean;
+}): Promise<NotificationChannel> {
+  return (await authedJson(`/workspaces/me/notifications`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(input),
+  })) as NotificationChannel;
+}
+
+export async function patchNotificationChannel(
+  id: string,
+  patch: Partial<{
+    name: string;
+    target_url: string;
+    triggers: TriggerName[];
+    secret_token: string | null;
+    is_active: boolean;
+  }>,
+): Promise<NotificationChannel> {
+  return (await authedJson(`/workspaces/me/notifications/${id}`, {
+    method: "PATCH",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(patch),
+  })) as NotificationChannel;
+}
+
+export async function deleteNotificationChannel(id: string): Promise<void> {
+  await authedJson(`/workspaces/me/notifications/${id}`, { method: "DELETE" });
+}
+
+/** Fire a synthetic test message immediately. Returns the resulting
+ *  NotificationDelivery row so the UI can show "✓ sent" or
+ *  "✗ failed: 401" inline. */
+export async function testNotificationChannel(
+  id: string,
+): Promise<NotificationDelivery> {
+  const body = (await authedJson(
+    `/workspaces/me/notifications/${id}/test`,
+    { method: "POST" },
+  )) as { delivery: NotificationDelivery };
+  return body.delivery;
+}
+
+export async function fetchNotificationDeliveries(
+  id: string,
+  limit = 50,
+): Promise<NotificationDelivery[]> {
+  const body = (await authedJson(
+    `/workspaces/me/notifications/${id}/deliveries?limit=${limit}`,
+  )) as { deliveries: NotificationDelivery[] };
+  return body.deliveries;
+}

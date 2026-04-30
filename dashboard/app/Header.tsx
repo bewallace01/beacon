@@ -54,6 +54,12 @@ export default function Header() {
               polaris
             </Link>
             <Link
+              href="/notifications"
+              className="text-gray-700 hover:text-accent-600 transition-colors"
+            >
+              notifications
+            </Link>
+            <Link
               href="/account"
               className="text-gray-700 hover:text-accent-600 transition-colors"
             >

@@ -4,9 +4,9 @@ Read MEMORY.md first if it's been a while. (Older Done Log entries call the proj
 
 ## NOW
 
-> **Phase 9.5: Dashboard "Notifications" panel**
+> **Phase 9.6: Phase 9 demo**
 
-Phase 5 shipped 2026-04-26: PaaS-for-agents end-to-end. Phase 6 shipped 2026-04-27: Polaris orchestrator bot deployed via the Phase 5 PaaS. Phase 7 shipped 2026-04-28: output validation (advisory). Phase 8 shipped 2026-04-28: blocking validators. Phase 9 makes Lightsei a product people actually want to use: it tells you when something needs your attention instead of waiting for you to check. **9.0–9.4 shipped the full notification surface (PyPI publish, channel API, five-platform dispatcher, generic webhook with HMAC, BackgroundTasks trigger pipeline). All five channel types fire automatically on the right triggers when an event lands.**
+Phase 5 shipped 2026-04-26: PaaS-for-agents end-to-end. Phase 6 shipped 2026-04-27: Polaris orchestrator bot deployed via the Phase 5 PaaS. Phase 7 shipped 2026-04-28: output validation (advisory). Phase 8 shipped 2026-04-28: blocking validators. Phase 9 makes Lightsei a product people actually want to use: it tells you when something needs your attention instead of waiting for you to check. **9.0–9.5 shipped the full notification surface (PyPI publish, channel API, five-platform dispatcher, generic webhook with HMAC, BackgroundTasks trigger pipeline, dashboard panel). All five channel types fire automatically on the right triggers, manageable via /notifications.**
 
 Phases 1-4 shipped 2026-04-25. Production-readiness items (DB backups, tests + CI, rate limits + body cap, bot instance identity, secrets store) shipped 2026-04-26. See Done Log.
 
@@ -205,20 +205,9 @@ Three trigger types: `polaris.plan`, `validation.fail`, `run_failed`.
 
 ### 9.4 Trigger pipeline: hook into event ingestion ✅ done 2026-04-30 (see Done Log)
 
-### 9.5 Dashboard: Notifications panel (NOW)
+### 9.5 Dashboard: Notifications panel ✅ done 2026-04-30 (see Done Log)
 
-- New `/account` tab (or sibling page `/notifications`) listing the workspace's channels with type icon, masked URL, active triggers, and a recent-deliveries summary ("3 sent, 0 failed in the last 24h").
-- "Add channel" form: name, type dropdown (Slack / Discord / Teams / Mattermost / Webhook), URL input (paste), checkboxes for triggers. Each type carries a hint pointing the user at where to get the webhook URL:
-  - **Slack**: "Slack → Apps → Incoming Webhooks → Add to a channel."
-  - **Discord**: "Discord channel settings → Integrations → Webhooks → New Webhook → Copy URL."
-  - **Teams**: "Teams channel → Workflows → 'Post to a channel when a webhook request is received' → Copy URL. (Old Office 365 Connector URLs no longer work as of 2025.)"
-  - **Mattermost**: "Mattermost → Integrations → Incoming Webhooks → Add."
-  - **Webhook**: "Any URL that accepts POST. Optional shared secret for HMAC verification."
-- "Send test" button per channel: hits the `/test` endpoint which fires a fake message immediately. The button changes to "✓ sent at HH:MM" so the user knows it worked.
-- Toggle channel active/inactive, edit triggers, delete channel.
-- Polished aesthetic: same plain-Tailwind look as `/account`, doesn't try to be as creative as `/polaris`.
-
-### 9.6 Phase 9 demo
+### 9.6 Phase 9 demo (NOW)
 
 - Register at least three channels: Slack, Discord, and Teams (real webhook URLs from the user's actual workspaces). Optional: also Mattermost and a generic webhook (the latter pointing at webhook.site to verify the JSON envelope shape).
 - "Send test" on each → confirm formatted messages arrive on every platform with the platform-native styling (Slack Block Kit, Discord embed colors, Teams Adaptive Card).
@@ -271,6 +260,23 @@ Ideas that are good but not now. Add freely. Do not work on these until their ph
 ## Done Log
 
 Move tasks here as they finish. Look at this when momentum dips.
+
+### 2026-04-30 — Phase 9.5 Dashboard "Notifications" panel
+- [x] **New `/notifications` route** at `dashboard/app/notifications/page.tsx`. Sibling to `/account` (rather than nested) since notifications are workspace-level config that users will want to bookmark and link to. Linked from the global Header next to "polaris" so it's reachable from anywhere.
+- [x] **Add-channel form** with name, type dropdown (Slack / Discord / Teams / Mattermost / Generic webhook), URL paste field with type-specific hints, three trigger checkboxes pre-selected. Generic-webhook type reveals an extra "Shared secret" field for HMAC signing with a one-line explainer of what the X-Lightsei-Signature/Timestamp headers will carry. Form errors land inline; on success the new channel slides into the registered-channels list.
+- [x] **Channel rows** with one-letter mono-badge per type (S=Slack purple, D=Discord indigo, T=Teams blue, M=Mattermost cyan, W=Webhook gray) — keeps the page free of brand-asset licensing concerns while still letting users scan rows by type. Each row shows: name + type label + muted/signed status pills, masked target URL in mono, trigger chips (with inline edit), and per-row action buttons: send test / mute (or unmute) / delete.
+- [x] **"Send test" button**: posts to `/workspaces/me/notifications/{id}/test` and updates the button to "✓ sent" or "✗ failed" depending on the dispatcher result. Failure path renders the error reason + http_status inline (e.g., "http_error 401") so a user fixing a bad URL can see the issue without opening the deliveries panel.
+- [x] **Recent deliveries panel** (collapsed by default, expand per channel) — fetches the last 50 deliveries via `/deliveries`, shows a summary line ("last 50: 3 sent, 47 failed") and a table with timestamp / trigger / colored status pill / detail (HTTP status or error code). The deliveries table is the audit trail that lets a user diagnose why a channel isn't firing without leaving the dashboard.
+- [x] **Edit triggers in place**: clicking "edit" on the trigger chips swaps to a checkbox row with save/cancel; PATCH on save. No full-page re-render — just the row updates. Same pattern as the dashboard's other PATCH-driven edits.
+- [x] **Mute/unmute** flips `is_active` via PATCH. Muted channels render with a slightly grayer background and a "MUTED" pill so the user can see at a glance which ones are paused without expanding.
+- [x] **Delete uses `confirm()`** — workspace-level config the user owns, not data the bot creates, so a single confirmation is fine. No undo path; the audit deliveries are kept on the FK SET NULL side anyway (channel deletion doesn't cascade-delete past deliveries — though FK CASCADE on the channel does, so revisit if we ever care about deletion-survivor audits).
+- [x] **api.ts additions**: `ChannelType` + `TriggerName` literal types pinned to the backend's allow-lists; `NotificationChannel` and `NotificationDelivery` types matching the masked-URL response shape; six fetch helpers (`fetch`, `create`, `patch`, `delete`, `test`, `fetchDeliveries`).
+- [x] **Header link added** so `/notifications` appears next to `/polaris` and `/account` for logged-in users. Logged-out header is unchanged.
+- [x] **Real bug surfaced and fixed**: the dashboard built but the local backend container crashed on startup with `ModuleNotFoundError: No module named 'httpx'`. The 9.2 dispatcher introduced `httpx` as a dep but it was never added to `backend/requirements.txt` — local pytest passed because httpx was already installed for the SDK. Added `httpx==0.27.2` to backend requirements; rebuild lands cleanly through migrations 0014 and 0015 (validator_mode + notification_channels/deliveries). Backend test runs pre-9.5 unknowingly relied on a system-installed httpx; this would have broken the prod Railway deploy on 9.x rollout.
+- Verified live with `docker compose up backend` + `npm run dev`. Migration ran to 0015. Captured two screenshots:
+  - `docs/phase9-notifications-empty.png` — empty state with "Add a channel" form (default Slack, all 3 trigger boxes checked) and "No channels yet" empty card.
+  - `docs/phase9-notifications-populated.png` — three seeded channels (team-ops/Slack with all 3 triggers, alerts-discord with 2 triggers, n8n-pipeline/Webhook with HMAC SIGNED pill and 1 trigger) demonstrating the type-icon scan, masked URLs, and per-row actions.
+- Verified the dashboard build path: `npx tsc --noEmit` clean, `next build` produces `/notifications` at 6.95 KB First Load JS. Backend suite still 248/248 (no backend changes besides the requirements.txt fix).
 
 ### 2026-04-30 — Phase 9.4 Trigger pipeline hooked into event ingestion
 - [x] **`backend/notifications/triggers.py`** — three pieces split by responsibility:
