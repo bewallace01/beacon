@@ -4,9 +4,9 @@ Read MEMORY.md first if it's been a while. (Older Done Log entries call the proj
 
 ## NOW
 
-> **Phase 9.4: Trigger pipeline — hook into event ingestion**
+> **Phase 9.5: Dashboard "Notifications" panel**
 
-Phase 5 shipped 2026-04-26: PaaS-for-agents end-to-end. Phase 6 shipped 2026-04-27: Polaris orchestrator bot deployed via the Phase 5 PaaS. Phase 7 shipped 2026-04-28: output validation (advisory). Phase 8 shipped 2026-04-28: blocking validators. Phase 9 makes Lightsei a product people actually want to use: it tells you when something needs your attention instead of waiting for you to check. **9.0 published `lightsei` to PyPI 2026-04-29.** **9.1 shipped the notification API surface 2026-04-29.** **9.2 shipped the dispatcher + Slack / Discord / Teams / Mattermost formatters 2026-04-30.** **9.3 shipped the generic webhook formatter with HMAC signing 2026-04-30.**
+Phase 5 shipped 2026-04-26: PaaS-for-agents end-to-end. Phase 6 shipped 2026-04-27: Polaris orchestrator bot deployed via the Phase 5 PaaS. Phase 7 shipped 2026-04-28: output validation (advisory). Phase 8 shipped 2026-04-28: blocking validators. Phase 9 makes Lightsei a product people actually want to use: it tells you when something needs your attention instead of waiting for you to check. **9.0–9.4 shipped the full notification surface (PyPI publish, channel API, five-platform dispatcher, generic webhook with HMAC, BackgroundTasks trigger pipeline). All five channel types fire automatically on the right triggers when an event lands.**
 
 Phases 1-4 shipped 2026-04-25. Production-readiness items (DB backups, tests + CI, rate limits + body cap, bot instance identity, secrets store) shipped 2026-04-26. See Done Log.
 
@@ -203,17 +203,9 @@ Three trigger types: `polaris.plan`, `validation.fail`, `run_failed`.
 
 ### 9.3 Generic webhook channel ✅ done 2026-04-30 (see Done Log)
 
-### 9.4 Trigger pipeline: hook into event ingestion (NOW)
+### 9.4 Trigger pipeline: hook into event ingestion ✅ done 2026-04-30 (see Done Log)
 
-- After `POST /events` writes the event + validation rows, look up the workspace's active notification channels and figure out which triggers fire for this event:
-  - `event.kind == "polaris.plan"` → `polaris.plan` trigger
-  - any associated `event_validations` row has status `fail` → `validation.fail` trigger
-  - `event.kind == "run_failed"` → `run_failed` trigger
-- For each (channel, fired-trigger) pair: enqueue a `BackgroundTasks` job that calls the dispatcher. FastAPI runs background tasks after the response is returned, so /events stays fast. No new worker needed.
-- The audit row `notification_deliveries` writes asynchronously too; if the row insert fails (DB hiccup), log and move on.
-- Tests: pipeline tests mock the dispatcher and verify the right channels get the right signals; per-trigger filtering works; cross-workspace channels don't leak.
-
-### 9.5 Dashboard: Notifications panel
+### 9.5 Dashboard: Notifications panel (NOW)
 
 - New `/account` tab (or sibling page `/notifications`) listing the workspace's channels with type icon, masked URL, active triggers, and a recent-deliveries summary ("3 sent, 0 failed in the last 24h").
 - "Add channel" form: name, type dropdown (Slack / Discord / Teams / Mattermost / Webhook), URL input (paste), checkboxes for triggers. Each type carries a hint pointing the user at where to get the webhook URL:
@@ -279,6 +271,22 @@ Ideas that are good but not now. Add freely. Do not work on these until their ph
 ## Done Log
 
 Move tasks here as they finish. Look at this when momentum dips.
+
+### 2026-04-30 — Phase 9.4 Trigger pipeline hooked into event ingestion
+- [x] **`backend/notifications/triggers.py`** — three pieces split by responsibility:
+  - `detect_triggers(event, outcomes) -> list[str]` decides which symbolic triggers fired (`polaris.plan` from `event.kind`, `validation.fail` from any fail-status outcome, `run_failed` from `event.kind`). Pure logic, no I/O.
+  - `build_dispatch_plans(session, ...) -> list[DispatchPlan]` cross-products fired triggers × workspace's active channels, builds a `DispatchPlan` per matching pair carrying everything the BG task needs. Reads from the request session (cheap; one channel-list query).
+  - `dispatch_and_persist(plan)` runs one dispatch in a fresh DB session and writes the `NotificationDelivery` audit row. Designed for `BackgroundTasks` — never raises; defensive paths produce a `failed` Delivery and still write the row. A dispatcher exception lands `error: dispatch_exception`.
+- [x] **Hooked into `POST /events`** with the minimal possible diff: after `write_validation_rows`, call `detect_triggers` → `build_dispatch_plans` → `background_tasks.add_task` per plan. Three guarantees stay intact: a 422-rejected event (blocking validator) fires nothing because the `raise HTTPException(422)` short-circuits before this block; a slow webhook never blocks `/events` because BG tasks run after the response is sent; a misconfigured channel can't crash ingestion.
+- [x] **Validation outcomes attached to `validation.fail` signals**: the event's own payload doesn't carry post-emit validation results, so for `validation.fail` triggers we supplement `signal_payload` with the validation outcomes (validator + status + violations) so the formatter has them to render. The chat formatters' `first_violation_summary` helper picks the first failing entry; webhook formatter ships the full array.
+- [x] **`DispatchPlan` is a flat dataclass** with no DB session reference and no live ORM rows. The plan can outlive the request that built it — required because the request session closes before the BG task runs.
+- [x] **16 new tests** in `backend/tests/test_notifications_triggers.py`:
+  - 7 unit tests on `detect_triggers` covering each kind/outcome combo, the `polaris.plan` + `fail` double-fire case, the "warn doesn't trigger validation.fail" rule, and dedup behavior (two failing validators → one `validation.fail` not two).
+  - 9 integration tests on the full `POST /events` pipeline: subscribed channel fires + delivery row lands; no matching subs creates no rows; `is_active=False` channel skipped (mute without delete); a channel subscribed to multiple matching triggers gets one delivery per trigger; multiple channels on the same trigger each get their own delivery; cross-workspace isolation; failed dispatch records the audit row with status='failed'; `run_failed` event fires the right trigger; dispatcher crash records `dispatch_exception` and never blocks the response.
+- [x] **`BackgroundTasks` is a function parameter** on `post_event` — FastAPI auto-injects it. Tested transparently because `TestClient` runs BG tasks synchronously at end-of-request, so test assertions read the deliveries table immediately after `/events` returns.
+- [x] **`mock_httpx_post` helper duplicated** into `test_notifications_triggers.py` rather than imported from `test_notifications_dispatch.py` — pytest collection ordering means the patch needs to apply per-test-module, not via an import.
+- Real bug surfaced while writing the dispatcher-crash test: `monkeypatch.setattr(notifications, "dispatch", boom)` doesn't reach the call site inside `triggers.py` because `from notifications import dispatch as run_dispatch` was bound at module-load time. Fixed by patching `notifications.triggers.run_dispatch` directly. The test now verifies the right error type lands on the audit row, which is the actual product invariant we want.
+- Verified: `pytest tests/test_notifications_triggers.py -v` → **16/16** pass. Full backend suite → **248/248** (was 232; +16 trigger tests, no regressions). The notification surface is end-to-end functional: register a channel → real event lands in /events → dispatcher fires → audit row records the result. 9.5 makes it visible + manageable in the dashboard; 9.6 is the live demo.
 
 ### 2026-04-30 — Phase 9.3 Generic webhook channel + HMAC signing
 - [x] **`backend/notifications/webhook.py`** — fifth and final v1 channel type. Per-trigger envelope with a stable shape (`{type, workspace_id, agent_name, timestamp, dashboard_url, data}`); the `data` field carries the trigger-specific structured fields verbatim (no truncation, since webhook receivers consume programmatically rather than for human display). Three rendered envelopes (polaris.plan, validation.fail, run_failed) plus a self-explaining test envelope plus a future-proof passthrough so unrecognized triggers still ship the source payload.

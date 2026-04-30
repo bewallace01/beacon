@@ -4,7 +4,7 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
-from fastapi import Depends, FastAPI, File, Form, HTTPException, Query, Request, UploadFile
+from fastapi import BackgroundTasks, Depends, FastAPI, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, EmailStr, Field
 from sqlalchemy import desc, select, text
@@ -51,6 +51,7 @@ from models import (
 )
 import notifications
 import validators
+from notifications import triggers as notification_triggers
 from validation_pipeline import (
     evaluate_validators,
     find_blocking_failures,
@@ -253,6 +254,7 @@ def _rate_limited_workspace_id(
 @app.post("/events")
 def post_event(
     event: EventIn,
+    background_tasks: BackgroundTasks,
     session: Session = Depends(get_session),
     workspace_id: str = Depends(_rate_limited_workspace_id),
 ) -> dict[str, Any]:
@@ -315,6 +317,40 @@ def post_event(
     # blocking-pass alike) so the dashboard's chips and the
     # /events/{id}/validations endpoint have data to render.
     write_validation_rows(session, row.id, outcomes)
+
+    # Phase 9.4: figure out which symbolic notification triggers fired
+    # and enqueue dispatch tasks. The plan-building reads channels from
+    # the DB synchronously (cheap), then BackgroundTasks runs the
+    # actual HTTP-out after the response is sent (slow). A misconfigured
+    # channel or unreachable webhook never blocks ingestion.
+    fired = notification_triggers.detect_triggers(row, outcomes)
+    if fired:
+        # Attach validation outcomes to the signal payload for the
+        # validation.fail trigger so the formatter can render specific
+        # rules — the event's own payload doesn't carry post-emit
+        # validation results.
+        signal_payload = dict(row.payload or {})
+        if any(o.status == "fail" for o in outcomes):
+            signal_payload["validations"] = [
+                {
+                    "validator": o.validator_name,
+                    "status": o.status,
+                    "violations": o.violations,
+                }
+                for o in outcomes
+            ]
+        plans = notification_triggers.build_dispatch_plans(
+            session,
+            event=row,
+            workspace_id=workspace_id,
+            fired_triggers=fired,
+            dashboard_url_for=_dashboard_url_for,
+            payload_for_signal=signal_payload,
+        )
+        for plan in plans:
+            background_tasks.add_task(
+                notification_triggers.dispatch_and_persist, plan,
+            )
 
     return {"id": row.id, "status": "ok"}
 
