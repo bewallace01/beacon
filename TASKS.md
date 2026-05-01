@@ -4,9 +4,9 @@ Read MEMORY.md first if it's been a while. (Older Done Log entries call the proj
 
 ## NOW
 
-> **Phase 10: TBD** — pick the next phase. Open candidates listed under Phase 10+.
+> **Phase 10.2: GitHub webhook receiver**
 
-Phases 1-4 shipped 2026-04-25 (spine, cost-cap guardrail, Anthropic + streaming, hosted-readiness). Phase 5 shipped 2026-04-26 (PaaS-for-agents). Phase 6 shipped 2026-04-27 (Polaris orchestrator). Phase 7 shipped 2026-04-28 (output validation, advisory). Phase 8 shipped 2026-04-28 (blocking validators). Phase 9 shipped 2026-04-30 (notifications across Slack / Discord / Teams / Mattermost / generic webhook with HMAC, dashboard-managed, real Slack messages verified end-to-end against prod).
+Phases 1-4 shipped 2026-04-25 (spine, cost-cap guardrail, Anthropic + streaming, hosted-readiness). Phase 5 shipped 2026-04-26 (PaaS-for-agents). Phase 6 shipped 2026-04-27 (Polaris orchestrator). Phase 7 shipped 2026-04-28 (output validation, advisory). Phase 8 shipped 2026-04-28 (blocking validators). Phase 9 shipped 2026-04-30 (notifications). Phase 10 closes the workflow loop: connect a GitHub repo to your workspace, push to main, bots auto-redeploy, Polaris reads docs from the repo. The CLI stops being required.
 
 Phases 1-4 shipped 2026-04-25. Production-readiness items (DB backups, tests + CI, rate limits + body cap, bot instance identity, secrets store) shipped 2026-04-26. See Done Log.
 
@@ -213,20 +213,83 @@ Three trigger types: `polaris.plan`, `validation.fail`, `run_failed`.
 
 ---
 
-## Phase 10+: TBD
+## Phase 10: GitHub integration ("Vercel for agents")
 
-Open candidates for after notifications ship:
+**Demo at end of phase**: Connect this very project's GitHub repo to the prod Lightsei workspace. Update `TASKS.md` locally, commit + push to `main`. Within a minute, a Slack notification announces a new Polaris plan that reflects the change — no `lightsei deploy` ran. Push a code change to a registered bot directory; the GitHub webhook lands at the backend, the bot redeploys automatically, the dashboard shows a new Deployment row with `source=github_push` and the commit SHA. The CLI was never touched. The Done Log captures the verbatim Slack message + the dashboard's deploy panel screenshot + the GitHub-push timeline (commit at HH:MM:SS → deploy queued at HH:MM:SS+2 → running at HH:MM:SS+11).
 
-- **Personal-channel notifications (WhatsApp + SMS + Telegram)**: pull the three "outbound to a phone number / chat ID" channels into one phase. They share an auth + recipient-management model that's meaningfully different from Phase 9's "paste a webhook URL" pattern. Twilio covers WhatsApp + SMS with one integration (auth tokens, sender-number provisioning, recipient phone numbers per send, Meta's 24-template-approval cycle for non-reply WhatsApp messages). Telegram is a separate bot API but lighter weight (bot token + chat IDs, no template approval). Each user's recipient identifier (their phone or chat id) becomes its own first-class object on the workspace, since these channels are 1:1 not 1:room. Bigger phase than 9; worth doing right.
-- **Phase 10: act, don't just plan.** Polaris dispatches commands via `lightsei.send_command()` to user-deployed executor agents. Now safe — the validation gate (Phase 8) catches bad outputs before they reach the dispatch path.
-- **Polaris N: continuous eval (layer 5).** Judge-LLM scores past plans against actual outcomes.
-- **Layer 4: behavioral rules.** Loop detection, runaway-token guards, escalating-permission patterns. Streaming detection across a run.
+**Why this phase exists.** Today the deploy story is "build wheel, copy docs, run CLI." That's a manual checkpoint between writing and seeing. Every modern dev product trains users on "git push and it's live" — Vercel, Railway, Fly, Cloudflare Pages. Phase 10 brings Lightsei to that bar. Combined with Polaris reading docs from the repo (no re-deploy on doc changes), the friction between thinking and seeing the next plan goes from minutes to seconds.
+
+**Phase 10 scope**: PAT-based auth (paste a token, like Phase 9's webhook-URL pattern — OAuth UX deferred), one repo per workspace, one branch tracked, push-event webhooks only (PR/release events deferred). Multi-repo + per-environment tracking lands in Phase 10B if there's demand.
+
+### 10.1 GitHub auth + repo registration ✅ (shipped 2026-04-30)
+
+- Migration `0016_github_integrations`: new table `github_integrations` (id UUID, workspace_id FK CASCADE UNIQUE, repo_owner, repo_name, branch, encrypted_pat (via existing `secrets_crypto`), webhook_secret (random hex string we generate, used for HMAC verification on incoming webhook payloads), is_active, created_at, updated_at). One-row-per-workspace via the UNIQUE constraint.
+- Plus `github_agent_paths`: maps `(workspace_id, agent_name)` to the path within the repo where that agent's bot directory lives (e.g., agent `polaris` → path `polaris/`). Plain table, composite PK on `(workspace_id, agent_name)`.
+- ORM models matching the migration.
+- Endpoints under `/workspaces/me/github`:
+  - `PUT /workspaces/me/github` — register or update the workspace's integration. Body carries `repo_owner`, `repo_name`, `branch`, `pat`. Returns the integration with the PAT masked + the webhook URL the user needs to paste into GitHub.
+  - `GET /workspaces/me/github` — show current integration with PAT masked, plus the webhook secret needed to configure GitHub's "Secret" field.
+  - `DELETE /workspaces/me/github` — disconnect.
+  - `PUT /workspaces/me/github/agents/{agent_name}` — register a path mapping. Body: `path`.
+  - `GET /workspaces/me/github/agents` — list path mappings.
+  - `DELETE /workspaces/me/github/agents/{agent_name}`.
+- PAT validation server-side: ping `GET https://api.github.com/repos/{owner}/{name}` with the token on `PUT`; reject with 400 if the API returns 401/403/404 (token can't read the repo). Catches the "wrong token" mistake at registration time, not at first webhook.
+- Tests: round-trip `PUT/GET/DELETE`, PAT masked on response, agent-path CRUD, cross-workspace isolation, 400 on unreachable repo (mocked GitHub), webhook secret never echoed back unmasked.
+
+### 10.2 GitHub webhook receiver
+
+- New endpoint `POST /webhooks/github`. Public (GitHub posts to it; no Lightsei API key). HMAC-SHA256-signed by GitHub against the `webhook_secret` we returned in 10.1, verified via `X-Hub-Signature-256` header. Constant-time compare; reject with 401 on mismatch.
+- Looks up the integration by repo full name (`{owner}/{name}` from the payload). 404 if no workspace has registered this repo. Quietly accepts (200) but no-ops if the integration is `is_active=False`.
+- Filters event types: only `push` events on the registered branch. Pings (the GitHub "is this thing on?" event), tag pushes, branch creations, etc. all 200 + no-op.
+- For each registered agent path: check whether the push touched any file under that path (uses `commits[].added/modified/removed`). If so, queue a redeploy in 10.3.
+- Tests: HMAC verified happy path, unsigned request 401, signed-but-wrong-secret 401, ping events 200 no-op, push event with no touched paths 200 no-op, push with one touched path queues exactly one redeploy.
+
+### 10.3 Push-triggered redeploy
+
+- New worker pipeline path: when a push hits a registered agent path, fetch the agent's bot directory at the pushed commit via the GitHub Contents API (Tree + Blob). Build a deploy zip in-memory, create a `deployment_blob` row + `deployment` row pointing at it. The Phase 5 worker picks up `desired_state=running` deployments via its existing `claim` loop — no new worker code.
+- New columns on `deployments`: `source` (`cli` | `github_push`, default `cli` for backwards compat), `source_commit_sha` (nullable). Migration `0017_deployments_source`.
+- The dashboard's Deployments panel shows the source + commit SHA inline so a user can tell at a glance whether a deploy came from `lightsei deploy` or from a GitHub push.
+- Tests: a push event for a registered path + a registered integration + an active workspace creates a new `deployment` row with `source=github_push` and the commit SHA; the worker can claim and run it just like a CLI deploy; cross-workspace isolation; integration `is_active=False` blocks the redeploy.
+
+### 10.4 Polaris reads docs from GitHub
+
+- New optional env vars on `polaris/bot.py`: `POLARIS_GITHUB_REPO` (`owner/name`), `POLARIS_GITHUB_BRANCH`, `POLARIS_GITHUB_TOKEN` (workspace secret), `POLARIS_GITHUB_DOCS_PATHS` (comma-separated repo-relative paths, default `MEMORY.md,TASKS.md`).
+- When set, the bot fetches each docs path from `https://api.github.com/repos/{repo}/contents/{path}?ref={branch}` on every tick instead of reading from disk. Backwards compatible — if any of the GitHub vars are unset, falls back to the existing `POLARIS_DOCS_DIR` path.
+- The hash-skip cache from Phase 6.2 still works: GitHub returns the same content for unchanged docs, so the SHA-256 hash is the same, so the LLM call is skipped. The "redeploy busts the cache" behavior changes — now you can iterate on docs by pushing to GitHub, and the cache busts on each push instead of each deploy.
+- A simple onboarding helper: when registering the GitHub integration, automatically inject `POLARIS_GITHUB_REPO` and `POLARIS_GITHUB_BRANCH` into the workspace's secrets if Polaris is registered as an agent. The user only needs to add `POLARIS_GITHUB_TOKEN` themselves (or auto-derive from the integration PAT — TBD: simpler if we just reuse the integration PAT, but the bot needs to fetch the secret on tick from the worker's secret-injection path. Decide in 10.4.)
+- Tests: bot tick with `POLARIS_GITHUB_REPO` set fetches via API and computes hash from the response; hash-skip works on identical fetches; falls back cleanly when env unset; 401/404 from GitHub doesn't crash the bot (logs warning, sleeps, retries next tick).
+
+### 10.5 Dashboard `/github` panel
+
+- New top-level route `/github`. Connect-repo form: paste PAT, repo URL (we parse owner/name from `https://github.com/owner/name` — accept either full URL or `owner/name`), pick branch (default `main`).
+- After registration: show the connection status (active, repo, branch), the **webhook URL** the user needs to add to their GitHub repo's webhook settings, the **secret** to paste into GitHub's webhook config, and a one-line copy-paste-ready instruction (paste the URL, paste the secret, content type `application/json`, send `push` events).
+- Agent-path mapping table: registered agents → repo paths. Add row with agent-name dropdown (drawn from existing agents in the workspace) + path input.
+- Recent deploys panel: list the workspace's GitHub-triggered deploys with commit SHA, agent, status, timestamp.
+- Match the plain-Tailwind aesthetic of `/notifications` and `/account`.
+
+### 10.6 Phase 10 demo
+
+- Provision a real GitHub PAT for this project's repo (`github.com/bewallace01/lightsei`). Register the integration on prod via `/github`. Map agent `polaris` → path `polaris/`. Configure GitHub's webhook (URL + secret).
+- **Polaris-from-GitHub leg**: redeploy Polaris with `POLARIS_GITHUB_REPO=bewallace01/lightsei` set. Verify the next tick's plan reads from GitHub (response includes recent commits visible in the docs). Update `TASKS.md`, commit, push. Within an hour (or trigger a tick manually) Polaris's next plan in Slack reflects the change.
+- **Push-to-deploy leg**: edit `examples/demo_deploy/bot.py` (a small comment change), commit, push. Watch the dashboard's `/github` panel show a new GitHub-triggered deploy land within seconds. Verify the worker picks it up and the agent rolls forward.
+- Done Log: timeline of the push → webhook → deploy → running transitions; verbatim Slack message after the doc change; `/github` panel screenshot; honest assessment of "would I rather push to GitHub or run `lightsei deploy`?"
+
+---
+
+## Phase 11+: TBD
+
+Open candidates for after GitHub integration ships:
+
+- **Phase 10B**: GitHub OAuth (replace PAT paste), multi-repo per workspace, per-environment branch tracking (a single repo's `main` and `staging` branches deploy to different agents).
+- **Personal-channel notifications (WhatsApp + SMS + Telegram)**: pull the three "outbound to a phone number / chat ID" channels into one phase. Twilio covers WhatsApp + SMS with one integration (auth tokens, sender-number provisioning, recipient phone numbers per send, Meta's 24-template-approval cycle for non-reply WhatsApp messages). Telegram is a separate bot API but lighter weight (bot token + chat IDs, no template approval). Each user's recipient identifier becomes its own first-class object on the workspace, since these channels are 1:1 not 1:room.
+- **Polaris dispatch (act, don't just plan)**: Polaris dispatches commands via `lightsei.send_command()` to user-deployed executor agents. The validation gate (Phase 8) catches bad outputs before they reach the dispatch path; what's missing is layer 5 (continuous eval) so we know whether the dispatched commands actually work.
+- **Polaris continuous eval (layer 5)**: judge-LLM scores past plans against actual outcomes (which next-actions actually got done? which were ignored? which led to drift?). Closes the loop on whether the orchestrator is any good.
+- **Layer 4: behavioral rules**: loop detection, runaway-token guards, escalating-permission patterns. Streaming detection across a run.
 - **Phase 5B**: cut single-host worker over to Fly Machines / Modal sandboxes (gates external users).
 - **Phase 8B**: SDK `emit_sync` + Polaris `polaris.plan_rejected` advisory events. Strengthens the rejection feedback loop so the dashboard can render rejected plans explicitly rather than relying on absence.
-- **Email notifications** (deferred from Phase 9): adds the obvious channel for users without team chat, but needs SMTP infra (Resend / Postmark / SES). Webhook path covers most existing wiring already.
-- GitHub OAuth + push-to-deploy.
-- Buildpacks / Dockerfile support beyond the fixed Python runtime.
-- N replicas + cron scheduling natively in the worker (Polaris currently does its own sleep loop; a real cron primitive would be cleaner).
+- **Email notifications** (still deferred from Phase 9): needs SMTP infra (Resend / Postmark / SES).
+- **Buildpacks / Dockerfile support** beyond the fixed Python runtime.
+- **N replicas + cron scheduling natively in the worker** (Polaris currently does its own sleep loop; a real cron primitive would be cleaner once we have multiple bots that all want to tick on schedules).
 
 ---
 
@@ -255,6 +318,21 @@ Ideas that are good but not now. Add freely. Do not work on these until their ph
 ## Done Log
 
 Move tasks here as they finish. Look at this when momentum dips.
+
+### 2026-04-30 — Phase 10.1: GitHub auth + repo registration
+
+Server-side surface for "connect a GitHub repo to a Lightsei workspace." The user pastes a fine-grained PAT, we validate it against the GitHub API on `PUT`, generate a webhook secret on first registration (revealed once, stored encrypted forever after), and accept per-agent path mappings so a future webhook knows which agent corresponds to which repo subdirectory.
+
+- [x] **Migration `0016_github_integrations`** (`backend/alembic/versions/20260430_0016_github_integrations.py`): two tables. `github_integrations` (id, workspace_id FK CASCADE UNIQUE, repo_owner, repo_name, branch default `main`, encrypted_pat, encrypted_webhook_secret, is_active, timestamps). `github_agent_paths` ((workspace_id, agent_name) composite PK, path up to 512 chars, timestamps). Both encrypted columns reuse `secrets_crypto.encrypt()` — same scheme as `WorkspaceSecret` rows.
+- [x] **ORM models** (`backend/models.py`): `GitHubIntegration` + `GitHubAgentPath`. UNIQUE(workspace_id) on the integration enforces "one repo per workspace" in v1; multi-repo lands in Phase 10B if there's demand.
+- [x] **Thin GitHub REST client** (`backend/github_api.py`, ~130 lines, no `PyGithub` dep): single function `validate_pat(owner, name, pat)` pings `GET /repos/{owner}/{name}` with a 5s timeout. Translates 401→auth error, 403→scope/rate-limit hint, 404→not_found, timeouts→transport. Returns `RepoMetadata` (full_name, default_branch, private). Tests mock `httpx.Client` at the module level — same pattern Phase 9.2's notifications tests use.
+- [x] **Six endpoints** (all under `/workspaces/me/github`, all `Depends(get_workspace_id)`): `PUT` registers/updates and validates the PAT against GitHub before storing; `GET` returns the masked PAT (`ghp_...5678`) but never the plaintext webhook secret on subsequent reads; `DELETE` removes the integration; `GET /agents` lists path mappings; `PUT /agents/{name}` upserts a single mapping; `DELETE /agents/{name}` removes one. Webhook secret revealed exactly once on first registration with explicit reveal note ("Save this — it is shown once. To rotate, DELETE and re-register").
+- [x] **Defense at the boundary**: regex on owner (`^[A-Za-z0-9](?:[A-Za-z0-9._-]){0,38}$`), repo (`^[A-Za-z0-9](?:[A-Za-z0-9._-]){0,99}$`), branch, agent name. Path validator rejects empty, leading slashes, backslashes, and any segment containing `..` (catches `../foo`, `foo/../bar`, `foo/..`).
+- [x] **27 tests in `tests/test_github.py`** (all passing): happy-path PUT→GET round-trip with masked PAT + one-time webhook reveal, update keeps webhook secret but rotates PAT, DELETE+re-PUT generates fresh webhook secret, 401/403/404/transport translations from mocked GitHub, malformed-input rejections, agent path CRUD, parametrized bad-path test (`["", "/leading/slash", "../foo", "foo/../bar", "foo/..", "windows\\path"]`), cross-workspace isolation on both integration and agent paths, 401 on unauthenticated requests.
+- [x] **Full backend suite green**: 275 passed, no regressions. The single bug surfaced during testing — GET returned `***` instead of the masked PAT because the serializer only masked when plaintext was passed in — is fixed (GET now decrypts the stored PAT inside the handler purely to compute the display mask).
+- [x] **Note on the masking pattern**: serializer always masks; passing `pat_plaintext` enables a *visible* mask (`ghp_...5678`) instead of the fallback `***`. Plaintext is never echoed to the wire. PUT response does the same — caller never sees the PAT bytes back, even on the first registration.
+
+Phase 10.2 (webhook receiver) builds directly on this: the `webhook_secret` is the HMAC key GitHub uses to sign incoming push payloads, and the `(workspace_id, agent_name) → path` map is what determines which agent gets redeployed when a push touches files under its registered path.
 
 ### 2026-04-30 — Phase 9 Notifications COMPLETE 🎯
 Demo criterion (from MEMORY.md / Phase 9 header): *"Add a webhook URL on the workspace through the dashboard. Within minutes Polaris's next plan lands in your team chat as a formatted message with the summary, top next-action, and a deep link back to /polaris. Validation FAIL → different message with the matched rule. Run failure → crash message. The user never opened the dashboard."* — passed.

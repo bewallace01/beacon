@@ -545,3 +545,77 @@ class NotificationDelivery(Base):
             "channel_id", "sent_at",
         ),
     )
+
+
+class GitHubIntegration(Base):
+    """One workspace's connection to a GitHub repo.
+
+    Phase 10.1 stores the repo identity, encrypted PAT, and encrypted
+    webhook secret. Phase 10.2's webhook receiver looks rows up by
+    repo full name; Phase 10.3's push-triggered redeploy uses the
+    decrypted PAT to fetch tree + blobs from the GitHub Contents API.
+
+    The webhook secret is generated server-side on first registration
+    and revealed once in the PUT response so the user can paste it
+    into GitHub's webhook config. After that it stays encrypted at
+    rest and is consulted on every inbound webhook to verify the
+    `X-Hub-Signature-256` header.
+
+    `UNIQUE(workspace_id)` enforces one repo per workspace v1.
+    """
+    __tablename__ = "github_integrations"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    workspace_id: Mapped[str] = mapped_column(
+        String,
+        ForeignKey("workspaces.id", ondelete="CASCADE"),
+        nullable=False,
+        unique=True,
+    )
+    repo_owner: Mapped[str] = mapped_column(String(255), nullable=False)
+    repo_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    branch: Mapped[str] = mapped_column(String(255), nullable=False, default="main")
+    encrypted_pat: Mapped[str] = mapped_column(Text, nullable=False)
+    encrypted_webhook_secret: Mapped[str] = mapped_column(Text, nullable=False)
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+
+    __table_args__ = (
+        UniqueConstraint(
+            "workspace_id", name="uq_github_integrations_workspace"
+        ),
+    )
+
+
+class GitHubAgentPath(Base):
+    """Maps (workspace, agent_name) → repo-relative path.
+
+    A push that touches files under a registered path triggers a
+    redeploy of that agent in Phase 10.3. Composite PK lets a
+    workspace register multiple agents (one path per agent) without
+    a join table.
+
+    Path validation (no `..`, no leading slash, max 512 chars) lives
+    at the endpoint layer rather than as a CHECK constraint so the
+    error message can name the rule.
+    """
+    __tablename__ = "github_agent_paths"
+
+    workspace_id: Mapped[str] = mapped_column(
+        String,
+        ForeignKey("workspaces.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    agent_name: Mapped[str] = mapped_column(String(64), primary_key=True)
+    path: Mapped[str] = mapped_column(String(512), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
