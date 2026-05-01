@@ -4,7 +4,7 @@ Read MEMORY.md first if it's been a while. (Older Done Log entries call the proj
 
 ## NOW
 
-> **Phase 10.4: Polaris reads docs from GitHub**
+> **Phase 10.5: Dashboard /github panel**
 
 Phases 1-4 shipped 2026-04-25 (spine, cost-cap guardrail, Anthropic + streaming, hosted-readiness). Phase 5 shipped 2026-04-26 (PaaS-for-agents). Phase 6 shipped 2026-04-27 (Polaris orchestrator). Phase 7 shipped 2026-04-28 (output validation, advisory). Phase 8 shipped 2026-04-28 (blocking validators). Phase 9 shipped 2026-04-30 (notifications). Phase 10 closes the workflow loop: connect a GitHub repo to your workspace, push to main, bots auto-redeploy, Polaris reads docs from the repo. The CLI stops being required.
 
@@ -251,7 +251,7 @@ Three trigger types: `polaris.plan`, `validation.fail`, `run_failed`.
 - The dashboard's Deployments panel shows the source + commit SHA inline so a user can tell at a glance whether a deploy came from `lightsei deploy` or from a GitHub push.
 - Tests: a push event for a registered path + a registered integration + an active workspace creates a new `deployment` row with `source=github_push` and the commit SHA; the worker can claim and run it just like a CLI deploy; cross-workspace isolation; integration `is_active=False` blocks the redeploy.
 
-### 10.4 Polaris reads docs from GitHub
+### 10.4 Polaris reads docs from GitHub ✅ (shipped 2026-04-30)
 
 - New optional env vars on `polaris/bot.py`: `POLARIS_GITHUB_REPO` (`owner/name`), `POLARIS_GITHUB_BRANCH`, `POLARIS_GITHUB_TOKEN` (workspace secret), `POLARIS_GITHUB_DOCS_PATHS` (comma-separated repo-relative paths, default `MEMORY.md,TASKS.md`).
 - When set, the bot fetches each docs path from `https://api.github.com/repos/{repo}/contents/{path}?ref={branch}` on every tick instead of reading from disk. Backwards compatible — if any of the GitHub vars are unset, falls back to the existing `POLARIS_DOCS_DIR` path.
@@ -318,6 +318,23 @@ Ideas that are good but not now. Add freely. Do not work on these until their ph
 ## Done Log
 
 Move tasks here as they finish. Look at this when momentum dips.
+
+### 2026-04-30 — Phase 10.4: Polaris reads docs from GitHub
+
+The orchestrator gains an optional GitHub fetch path. When `POLARIS_GITHUB_REPO` + `POLARIS_GITHUB_TOKEN` are set, the bot pulls docs from the repo on every tick instead of from disk. Combined with the Phase 6.2 hash-skip cache, the user can iterate on docs by pushing to GitHub — no redeploy required, the cache busts on every push that changes a hashed doc and skips on every push that doesn't. CLI deploys still work; missing env vars fall back transparently to `POLARIS_DOCS_DIR`.
+
+- [x] **New env vars on `polaris/bot.py`**: `POLARIS_GITHUB_REPO` (`owner/name`), `POLARIS_GITHUB_BRANCH` (default `main`), `POLARIS_GITHUB_TOKEN` (workspace secret), `POLARIS_GITHUB_DOCS_PATHS` (comma-separated, default `MEMORY.md,TASKS.md`). Resolved per-tick (not at import) so a worker secret-injection that lands after import still takes effect on the next poll.
+- [x] **`_gh_config()` dispatcher**: returns a fully-populated config dict only when REPO + TOKEN are both set and well-formed; returns None otherwise. Single source of truth for "is GitHub mode active?" — callers don't reason about partial state.
+- [x] **`_fetch_github_doc(...)`**: hits `GET /repos/{owner}/{name}/contents/{path}?ref={branch}` with the PAT. Decodes inline base64 content (Polaris docs are well inside GitHub's 1MB inline ceiling). Maps 401/404/non-2xx/transport/list-response (directory at this path) to a single `GitHubDocFetchError` so the tick loop has one exception type to catch.
+- [x] **Hash stability**: hashes are computed from the decoded text, NOT from GitHub's reported blob `sha` — so disk and GitHub modes produce identical hashes for identical content. A user transitioning from `lightsei deploy` to `git push` keeps their cache instead of invalidating it.
+- [x] **`_call_claude` generalized**: instead of hardcoding `<MEMORY.md>` + `<TASKS.md>` tags, the prompt builder iterates `docs["docs"]` (a `{filename: text}` dict) and wraps each in an XML tag named after the file. Default config produces the same prompt shape as before; custom `POLARIS_GITHUB_DOCS_PATHS` lets users include additional files (e.g., `ROADMAP.md`).
+- [x] **`tick()` skips on fetch failure**: `GitHubDocFetchError` is caught, logged, emitted as `polaris.tick_skipped` with reason `github fetch failed`. Crucially, `_last_hashes` is left unchanged — so the next successful fetch produces a plan even if the now-current content matches the last-cached hashes (i.e., the failure window doesn't silently extend the cache).
+- [x] **17 tests in `backend/tests/test_polaris_docs.py`** (all passing): `_gh_config` dispatch (env unset → None, malformed repo → None, defaults applied, custom values honored, empty CSV falls back to defaults); `_fetch_github_doc` (base64 decode, ref + path + auth header sent correctly, 401 + 404 + transport + directory-listing-response all raise `GitHubDocFetchError`); `_read_docs_from_github` (hits API once per path, hashes are stable across identical fetches, hashes match disk-mode hashes for identical content); `_read_docs` dispatch (env unset → disk; env set → GitHub).
+- [x] **`backend/pytest.ini` extended**: `pythonpath` now includes `../polaris` so the backend test runner can `import bot` and exercise the polaris doc-reading paths without spinning up a separate test infrastructure.
+- [x] **Backwards compat**: when GitHub vars are unset the bot reads from disk exactly as before, including the Phase 6.2 hash-skip cache. Existing CLI-deployed Polaris instances get no behavior change from this commit.
+- [x] **Auto-injecting `POLARIS_GITHUB_REPO` / `POLARIS_GITHUB_BRANCH` into workspace secrets on integration registration** is deferred to Phase 10.5 (the dashboard `/github` panel) — it's UX glue, not a backend requirement, and adding a side effect to PUT now would couple integration registration to the secrets API. The user manually sets `POLARIS_GITHUB_TOKEN` (intentional — it's a separate trust boundary from the workspace-level integration PAT, even if today they end up being the same string).
+
+The push-to-Polaris loop is now wired end-to-end on the backend / bot side. Phase 10.5 (dashboard `/github` panel) plus 10.6 (the prod demo) are what's left before Phase 10 closes.
 
 ### 2026-04-30 — Phase 10.3: Push-triggered redeploy
 
