@@ -841,3 +841,104 @@ export async function fetchNotificationDeliveries(
   )) as { deliveries: NotificationDelivery[] };
   return body.deliveries;
 }
+
+// ---------- GitHub integration (Phase 10.5) ---------- //
+//
+// One repo per workspace in v1. The PUT response is the only surface
+// where webhook_secret comes back in plaintext — store it in component
+// state so the user can copy it once, and surface a "to rotate, delete
+// + re-register" affordance for later. Subsequent GET calls return
+// only `has_webhook_secret: true`.
+
+export type GitHubIntegration = {
+  id: string;
+  repo_owner: string;
+  repo_name: string;
+  branch: string;
+  pat_masked: string;
+  has_webhook_secret: boolean;
+  is_active: boolean;
+  webhook_url: string;
+  created_at: string;
+  updated_at: string;
+};
+
+export type GitHubIntegrationFresh = GitHubIntegration & {
+  // Only present on the response from PUT (initial registration).
+  // After that the secret stays encrypted at rest and the user must
+  // delete + re-register to see a new one.
+  webhook_secret?: string;
+  webhook_secret_reveal_note?: string;
+  default_branch_from_github?: string;
+};
+
+export type GitHubAgentPath = {
+  agent_name: string;
+  path: string;
+  created_at: string;
+  updated_at: string;
+};
+
+export async function fetchGitHubIntegration(): Promise<GitHubIntegration | null> {
+  // 404 is the load-bearing "no integration registered" signal — swallow
+  // it before the generic authedJson error path turns it into a thrown
+  // Error with a string detail.
+  const r = await fetch(`${API_URL}/workspaces/me/github`, {
+    cache: "no-store",
+    headers: authHeaders(),
+  });
+  if (r.status === 401) throw new UnauthorizedError();
+  if (r.status === 404) return null;
+  if (!r.ok) throw new Error(`/workspaces/me/github returned ${r.status}`);
+  return (await r.json()) as GitHubIntegration;
+}
+
+export async function putGitHubIntegration(input: {
+  repo_owner: string;
+  repo_name: string;
+  branch: string;
+  pat: string;
+}): Promise<GitHubIntegrationFresh> {
+  return (await authedJson("/workspaces/me/github", {
+    method: "PUT",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(input),
+  })) as GitHubIntegrationFresh;
+}
+
+export async function deleteGitHubIntegration(): Promise<void> {
+  await authedJson("/workspaces/me/github", { method: "DELETE" });
+}
+
+export async function listGitHubAgentPaths(): Promise<GitHubAgentPath[]> {
+  const body = (await authedJson(
+    "/workspaces/me/github/agents",
+  )) as { agents: GitHubAgentPath[] };
+  return body.agents;
+}
+
+export async function putGitHubAgentPath(
+  agentName: string,
+  path: string,
+): Promise<GitHubAgentPath> {
+  return (await authedJson(
+    `/workspaces/me/github/agents/${encodeURIComponent(agentName)}`,
+    {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ path }),
+    },
+  )) as GitHubAgentPath;
+}
+
+export async function deleteGitHubAgentPath(agentName: string): Promise<void> {
+  await authedJson(
+    `/workspaces/me/github/agents/${encodeURIComponent(agentName)}`,
+    { method: "DELETE" },
+  );
+}
+
+export async function fetchAgents(): Promise<Agent[]> {
+  const body = (await authedJson("/agents")) as { agents: Agent[] };
+  return body.agents;
+}

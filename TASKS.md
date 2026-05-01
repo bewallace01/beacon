@@ -4,7 +4,7 @@ Read MEMORY.md first if it's been a while. (Older Done Log entries call the proj
 
 ## NOW
 
-> **Phase 10.5: Dashboard /github panel**
+> **Phase 10.6: Phase 10 demo**
 
 Phases 1-4 shipped 2026-04-25 (spine, cost-cap guardrail, Anthropic + streaming, hosted-readiness). Phase 5 shipped 2026-04-26 (PaaS-for-agents). Phase 6 shipped 2026-04-27 (Polaris orchestrator). Phase 7 shipped 2026-04-28 (output validation, advisory). Phase 8 shipped 2026-04-28 (blocking validators). Phase 9 shipped 2026-04-30 (notifications). Phase 10 closes the workflow loop: connect a GitHub repo to your workspace, push to main, bots auto-redeploy, Polaris reads docs from the repo. The CLI stops being required.
 
@@ -259,13 +259,7 @@ Three trigger types: `polaris.plan`, `validation.fail`, `run_failed`.
 - A simple onboarding helper: when registering the GitHub integration, automatically inject `POLARIS_GITHUB_REPO` and `POLARIS_GITHUB_BRANCH` into the workspace's secrets if Polaris is registered as an agent. The user only needs to add `POLARIS_GITHUB_TOKEN` themselves (or auto-derive from the integration PAT — TBD: simpler if we just reuse the integration PAT, but the bot needs to fetch the secret on tick from the worker's secret-injection path. Decide in 10.4.)
 - Tests: bot tick with `POLARIS_GITHUB_REPO` set fetches via API and computes hash from the response; hash-skip works on identical fetches; falls back cleanly when env unset; 401/404 from GitHub doesn't crash the bot (logs warning, sleeps, retries next tick).
 
-### 10.5 Dashboard `/github` panel
-
-- New top-level route `/github`. Connect-repo form: paste PAT, repo URL (we parse owner/name from `https://github.com/owner/name` — accept either full URL or `owner/name`), pick branch (default `main`).
-- After registration: show the connection status (active, repo, branch), the **webhook URL** the user needs to add to their GitHub repo's webhook settings, the **secret** to paste into GitHub's webhook config, and a one-line copy-paste-ready instruction (paste the URL, paste the secret, content type `application/json`, send `push` events).
-- Agent-path mapping table: registered agents → repo paths. Add row with agent-name dropdown (drawn from existing agents in the workspace) + path input.
-- Recent deploys panel: list the workspace's GitHub-triggered deploys with commit SHA, agent, status, timestamp.
-- Match the plain-Tailwind aesthetic of `/notifications` and `/account`.
+### 10.5 Dashboard `/github` panel ✅ (shipped 2026-04-30)
 
 ### 10.6 Phase 10 demo
 
@@ -318,6 +312,26 @@ Ideas that are good but not now. Add freely. Do not work on these until their ph
 ## Done Log
 
 Move tasks here as they finish. Look at this when momentum dips.
+
+### 2026-04-30 — Phase 10.5: Dashboard `/github` panel
+
+Top-level `/github` route in the dashboard. Plain-Tailwind, matches `/notifications` and `/account`. Empty state shows a connect form (repo URL or `owner/name`, branch, PAT). Registered state shows connection status + masked PAT, the webhook URL/secret to paste into GitHub (secret revealed exactly once), an agent-path mapping table backed by `/workspaces/me/github/agents`, and a recent-pushes deploy list filtered to `source=github_push`. The user no longer has to know `curl` to wire up GitHub.
+
+- [x] **`dashboard/app/github/page.tsx`** (~700 lines): four sub-components — `ConnectForm`, `StatusBlock`, `AgentPathsBlock`, `RecentDeploysBlock` — composed by `GitHubPage`. `parseRepoInput` accepts `owner/name`, `https://github.com/owner/name`, or `…/owner/name.git`; rejects anything else with a clean form error so we never POST garbage to the backend.
+- [x] **`webhook_secret` is a one-time reveal**: the PUT response (`GitHubIntegrationFresh`) carries a transient `webhook_secret` field that lives in `useState` only for the current page lifecycle. Refreshing wipes it. The persistent `GitHubIntegration` shape exposes only `has_webhook_secret: boolean`. To rotate, the user disconnects + reconnects — confirmed by an explicit copy in both the UI and the disconnect-confirm dialog. This matches the backend's "show once, store encrypted" contract from 10.1.
+- [x] **Agent-path mapping**: dropdown is filtered to agents that don't already have a mapping (no UI affordance for "edit existing" — remove + re-add is the path). The "add path" button disables when every registered agent already has a mapping, with a tooltip explaining why. Path input is sent as-is; the backend's `_validate_github_path` is the source of truth on what's allowed (no leading slash, no `..`, etc.).
+- [x] **Recent deploys panel**: reuses `fetchDeployments()` and filters client-side to `source === "github_push"`. Top-10 most-recent. Each row links to `/deployments/{id}` so the user can pivot from "I see a github push deploy" to its full status + logs without a route change. Honest empty state — "Push to a registered branch + path to see deploys land here" — instead of hiding the section.
+- [x] **`dashboard/app/api.ts` extensions**: `GitHubIntegration`, `GitHubIntegrationFresh`, `GitHubAgentPath` types matching `_serialize_github_integration` / `_serialize_github_agent_path` from the backend. `fetchGitHubIntegration` swallows 404 → `null` (the frontend's load-bearing "no integration" signal — `authedJson`'s default would have thrown a useless `Error("404")` instead). New `fetchAgents()` helper since `/github` needs the workspace's agent list to populate the mapping dropdown and we didn't have one yet (had `fetchAgent(name)` singular).
+- [x] **`dashboard/app/Header.tsx`**: added `github` link between `notifications` and `account`. Same plain-Tailwind treatment as the other top-level links.
+- [x] **Verification**:
+  - `npx tsc --noEmit` clean.
+  - `curl http://localhost:3000/github` returns 200, SSR snapshot includes the page header + "loading…" before client-side fetch resolves.
+  - Empty integration: GET `/workspaces/me/github` → 404 → page renders `ConnectForm`.
+  - PUT with a fake PAT against a real GitHub repo returns the backend's authoritative 400 (`"GitHub rejected the personal access token (401). Generate a new fine-grained PAT…"`) — the form catches it and surfaces it inline. Confirms the form's error path is wired to the backend, not just to network failures.
+  - Inserted a fixture `github_integrations` row directly + path-mapped `polaris` → `polaris/` via PUT `/workspaces/me/github/agents/polaris`. GET responses match the `GitHubIntegration` and `GitHubAgentPath` types exactly.
+- [x] **Deferred to 10.6**: the auto-injection of `POLARIS_GITHUB_REPO` / `POLARIS_GITHUB_BRANCH` into workspace secrets at integration registration time, mentioned in the Phase 10.4 Done Log as 10.5 work. Holding off because (a) it couples integration registration to the secrets API in a way that's hard to undo, (b) the user is already manually setting `POLARIS_GITHUB_TOKEN` so the "set 3 vars" UX isn't meaningfully worse than "set 2 vars", and (c) Phase 10.6 will be a real-PAT shakedown of the whole flow and is the right time to decide whether the auto-injection is worth the coupling. Easy to add later if the demo says it's needed.
+
+Phase 10 backend + frontend are now complete. Phase 10.6 is a real-world shakedown: register the integration on prod against `bewallace01/lightsei`, configure a webhook on github.com, push, watch Polaris read the new docs and a code change auto-deploy.
 
 ### 2026-04-30 — Phase 10.4: Polaris reads docs from GitHub
 

@@ -60,6 +60,12 @@ export default function Header() {
               notifications
             </Link>
             <Link
+              href="/github"
+              className="text-gray-700 hover:text-accent-600 transition-colors"
+            >
+              github
+            </Link>
+            <Link
               href="/account"
               className="text-gray-700 hover:text-accent-600 transition-colors"
             >
