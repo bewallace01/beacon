@@ -12,7 +12,6 @@ import {
   stopDeployment,
   UnauthorizedError,
 } from "../../api";
-import Header from "../../Header";
 
 function fmt(iso: string | null): string {
   if (!iso) return "—";
@@ -133,7 +132,6 @@ export default function DeploymentDetailPage({
 
   return (
     <main className="px-8 py-10 max-w-5xl mx-auto">
-      <Header />
 
       <div className="mb-6">
         <Link

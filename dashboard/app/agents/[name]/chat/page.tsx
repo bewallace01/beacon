@@ -13,7 +13,6 @@ import {
   ThreadMessage,
   UnauthorizedError,
 } from "../../../api";
-import Header from "../../../Header";
 
 function fmtTime(iso: string): string {
   try {
@@ -153,7 +152,6 @@ export default function ChatPage({ params }: { params: { name: string } }) {
 
   return (
     <main className="px-8 py-10 max-w-6xl mx-auto">
-      <Header />
 
       <div className="flex items-baseline gap-3 mb-2">
         <Link

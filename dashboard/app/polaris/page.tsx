@@ -13,7 +13,6 @@ import {
   ValidationStatus,
   worstValidationStatus,
 } from "../api";
-import Header from "../Header";
 
 const AGENT_NAME = "polaris";
 const POLL_MS = 30000;
@@ -611,7 +610,6 @@ export default function PolarisPage() {
   return (
     <main className="min-h-screen">
       <div className="px-8 pt-10 max-w-6xl mx-auto">
-        <Header />
       </div>
 
       {/* Hero band — dark celestial */}

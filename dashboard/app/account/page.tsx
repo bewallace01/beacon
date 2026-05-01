@@ -23,7 +23,6 @@ import {
   UnauthorizedError,
   WorkspaceSecretMeta,
 } from "../api";
-import Header from "../Header";
 
 function fmt(iso: string | null): string {
   if (!iso) return "—";
@@ -165,7 +164,6 @@ export default function AccountPage() {
 
   return (
     <main className="px-8 py-10 max-w-4xl mx-auto">
-      <Header />
 
       <div className="mb-8">
         <h1 className="text-2xl font-semibold tracking-tight">Account</h1>

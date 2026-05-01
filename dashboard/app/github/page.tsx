@@ -19,7 +19,6 @@ import {
   putGitHubAgentPath,
   putGitHubIntegration,
 } from "../api";
-import Header from "../Header";
 
 
 // "https://github.com/owner/name" or "https://github.com/owner/name.git"
@@ -672,7 +671,6 @@ export default function GitHubPage() {
 
   return (
     <main className="max-w-3xl mx-auto px-4 sm:px-6 py-6">
-      <Header />
 
       <div className="mb-6">
         <h1 className="text-2xl font-semibold text-gray-900">GitHub</h1>

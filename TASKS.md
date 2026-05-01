@@ -291,6 +291,7 @@ Open candidates for after GitHub integration ships:
 
 Ideas that are good but not now. Add freely. Do not work on these until their phase arrives or you've explicitly decided to promote one.
 
+- **Multiple workspaces per account** (promoted from a 2026-05-01 nav-redesign conversation). Today the data model is one workspace per user — session, API keys, and every workspace-scoped row assumes it. Real multi-workspace requires a `workspace_members` join table (user ↔ workspace + role), an "active workspace" pointer on the session, list/create/switch endpoints, and a UI to drive them via the new header dropdown. The dropdown shell shipped on 2026-05-01 already has a place for "switch workspace" + "+ new workspace" entries. Worth careful design on invites, billing-per-workspace, and what happens to API keys at switch time before starting.
 - LangChain auto-patch
 - LangGraph auto-patch
 - Requests library auto-patch (for script bots making HTTP calls)

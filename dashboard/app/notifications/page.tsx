@@ -15,7 +15,6 @@ import {
   patchNotificationChannel,
   testNotificationChannel,
 } from "../api";
-import Header from "../Header";
 
 const CHANNEL_TYPES: { value: ChannelType; label: string; hint: string }[] = [
   {
@@ -690,7 +689,6 @@ export default function NotificationsPage() {
 
   return (
     <main className="px-8 py-10 max-w-5xl mx-auto">
-      <Header />
 
       <div className="flex items-baseline justify-between mb-6">
         <div>

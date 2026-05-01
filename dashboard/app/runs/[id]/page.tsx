@@ -4,7 +4,6 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 import { Event, fetchRunEvents, Run, UnauthorizedError } from "../../api";
-import Header from "../../Header";
 
 function fmtTime(iso: string): string {
   try {
@@ -125,7 +124,6 @@ export default function RunDetail({ params }: { params: { id: string } }) {
 
   return (
     <main className="px-8 py-10 max-w-6xl mx-auto">
-      <Header />
 
       <Link
         href="/"

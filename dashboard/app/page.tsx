@@ -4,7 +4,6 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 import { fetchRunSummaries, RunSummary, UnauthorizedError } from "./api";
-import Header from "./Header";
 
 function fmtTime(iso: string): string {
   try {
@@ -49,7 +48,6 @@ export default function Home() {
 
   return (
     <main className="px-8 py-10 max-w-6xl mx-auto">
-      <Header />
 
       <div className="flex items-baseline justify-between mb-8">
         <div>
