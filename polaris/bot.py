@@ -5,6 +5,12 @@ docs) on every tick, calls Claude via a forced `submit_plan` tool call
 (strict schema guarantees the structured output), and emits the result
 as a `polaris.plan` event so the dashboard can render it.
 
+Phase 10.6 demo marker: this comment was pushed via git on 2026-05-01
+to verify the GitHub webhook → push-triggered redeploy loop. The
+agent-path mapping for `polaris` covers `polaris/`, so a touch to any
+file in that directory should fire the webhook and queue a new
+deployment with source=github_push without anyone running the CLI.
+
 Phase 6A scope: read-only. No PRs, no command dispatch. Polaris produces
 visible recommendations only. See TASKS.md "Phase 6" for the demo
 criterion and the 6B+ roadmap.
