@@ -137,3 +137,7 @@ When stuck on architecture, look at these:
 - Helicone (LLM proxy and observability)
 - PostHog (best-in-class plug-and-play SDK experience)
 - Sentry (gold standard for graceful degradation and auto-instrumentation)
+
+## Phase 10.6 demo marker (2026-05-01)
+
+This line was appended via a git push to verify that Polaris's next tick reads MEMORY.md from GitHub instead of from the bundled disk copy. The bot was redeployed earlier today with `POLARIS_GITHUB_REPO=bewallace01/lightsei` set; if the next plan reflects this marker, the GitHub-fetch path is wired correctly. Cleanup: leave the line in place until Phase 10.6 is in the Done Log, then either remove it or fold it into the demo write-up.
