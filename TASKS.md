@@ -4,9 +4,9 @@ Read MEMORY.md first if it's been a while. (Older Done Log entries call the proj
 
 ## NOW
 
-> **Phase 10.6: Phase 10 demo**
+> **Phase 11+: TBD**
 
-Phases 1-4 shipped 2026-04-25 (spine, cost-cap guardrail, Anthropic + streaming, hosted-readiness). Phase 5 shipped 2026-04-26 (PaaS-for-agents). Phase 6 shipped 2026-04-27 (Polaris orchestrator). Phase 7 shipped 2026-04-28 (output validation, advisory). Phase 8 shipped 2026-04-28 (blocking validators). Phase 9 shipped 2026-04-30 (notifications). Phase 10 closes the workflow loop: connect a GitHub repo to your workspace, push to main, bots auto-redeploy, Polaris reads docs from the repo. The CLI stops being required.
+Phases 1-4 shipped 2026-04-25 (spine, cost-cap guardrail, Anthropic + streaming, hosted-readiness). Phase 5 shipped 2026-04-26 (PaaS-for-agents). Phase 6 shipped 2026-04-27 (Polaris orchestrator). Phase 7 shipped 2026-04-28 (output validation, advisory). Phase 8 shipped 2026-04-28 (blocking validators). Phase 9 shipped 2026-04-30 (notifications). Phase 10 shipped 2026-05-01 (GitHub integration: push-to-deploy + Polaris reads docs from the repo). The CLI stopped being required.
 
 Phases 1-4 shipped 2026-04-25. Production-readiness items (DB backups, tests + CI, rate limits + body cap, bot instance identity, secrets store) shipped 2026-04-26. See Done Log.
 
@@ -261,12 +261,7 @@ Three trigger types: `polaris.plan`, `validation.fail`, `run_failed`.
 
 ### 10.5 Dashboard `/github` panel ✅ (shipped 2026-04-30)
 
-### 10.6 Phase 10 demo
-
-- Provision a real GitHub PAT for this project's repo (`github.com/bewallace01/lightsei`). Register the integration on prod via `/github`. Map agent `polaris` → path `polaris/`. Configure GitHub's webhook (URL + secret).
-- **Polaris-from-GitHub leg**: redeploy Polaris with `POLARIS_GITHUB_REPO=bewallace01/lightsei` set. Verify the next tick's plan reads from GitHub (response includes recent commits visible in the docs). Update `TASKS.md`, commit, push. Within an hour (or trigger a tick manually) Polaris's next plan in Slack reflects the change.
-- **Push-to-deploy leg**: edit `examples/demo_deploy/bot.py` (a small comment change), commit, push. Watch the dashboard's `/github` panel show a new GitHub-triggered deploy land within seconds. Verify the worker picks it up and the agent rolls forward.
-- Done Log: timeline of the push → webhook → deploy → running transitions; verbatim Slack message after the doc change; `/github` panel screenshot; honest assessment of "would I rather push to GitHub or run `lightsei deploy`?"
+### 10.6 Phase 10 demo ✅ (shipped 2026-05-01)
 
 ---
 
@@ -314,6 +309,46 @@ Ideas that are good but not now. Add freely. Do not work on these until their ph
 ## Done Log
 
 Move tasks here as they finish. Look at this when momentum dips.
+
+### 2026-05-01 — Phase 10.6: Phase 10 demo
+
+Both legs of the loop verified end-to-end against prod. Polaris is now reading docs from `bewallace01/lightsei` on every tick, and any push that touches a registered agent path becomes a `github_push` deployment within ~8 seconds with no CLI involvement. Phase 10 is done.
+
+**Happy path, both legs:**
+
+- [x] **Polaris-from-GitHub.** Saved `POLARIS_GITHUB_REPO=bewallace01/lightsei`, `POLARIS_GITHUB_BRANCH=main`, `POLARIS_GITHUB_TOKEN=<fine-grained PAT>` as workspace secrets. Redeployed Polaris. The bot's startup banner went from `docs=<local path>` to `docs github=bewallace01/lightsei@main paths=MEMORY.md,TASKS.md`. First tick after the redeploy fetched both docs via `GET /repos/.../contents/...`, called `claude-opus-4-7` with **75400 input tokens** (vs. ~48k from the older bundled docs — that delta is the entire Phase 10 content), and emitted a `polaris.plan` event whose summary explicitly references "Phase 10 is at the final task (10.6: Phase 10 demo)" — content that only exists in the GitHub copy. Both `schema_strict` and `content_rules` validators returned `pass` on the emit.
+- [x] **Push-to-deploy.** Single comment-only edit to `polaris/bot.py`, committed (`ede6e01`), pushed. github.com fired the `push` webhook → Lightsei's webhook receiver verified the HMAC, matched the touched file against the registered `polaris → polaris/` path, fetched the dir at `ede6e01` via the GitHub Contents API tree+blob dance (Phase 10.3 code), built the in-memory zip, created a `deployments` row with `source=github_push, source_commit_sha=ede6e01...`. The locally-running worker claimed it on its next 5-second poll, built the venv, fetched secrets, and the new instance went `running` 8 seconds after the push hit GitHub.
+
+**Operational story (the part that actually took the day):**
+
+- [x] **Phase 10.5 + 10.4 + 10.3 + 10.2 + 10.1 weren't deployed.** When I started the demo, `origin/main` was 4 commits behind local — Phases 10.1–10.4 had been committed but never pushed. Pushed everything; Railway picked them up. Pre-existing problem, surfaced because this was the first end-to-end use of prod since they shipped.
+- [x] **Railway dashboard service had a config bug.** The first dashboard build after the push failed with "Set the root directory to 'dashboard' in your service settings". Auto-detect was trying to build from the repo root (no `package.json`). The previous successful build was still serving, so the dashboard *worked* but couldn't accept new code. Fix is one Railway UI toggle: Settings → Root Directory → `dashboard`. Backend service had the same risk; verified its root was already set correctly.
+- [x] **The webhook leaked into chat.** Pasted a fine-grained PAT into the conversation by accident. Treated as compromised: revoked, generated a new one, scoped to `Contents: read` on the one repo. New PAT went only into the dashboard form (which validates against GitHub at PUT time and stores encrypted). The same trust boundary thinking led to Phase 10.4 deferring auto-injection of `POLARIS_GITHUB_TOKEN` from the integration PAT — even when they're the same string today, the integration PAT and the bot-runtime PAT should be rotatable independently.
+- [x] **First webhook delivery timed out.** github.com's "We couldn't deliver this payload" yellow banner. Backend was responding fine to `/health`... after a 9.6s cold start. GitHub's webhook deadline is 10s. Delivery was retryable from the github.com Recent Deliveries UI (cold container, then warm at 0.3s), but a missed first webhook with no retry trigger would silently drop on the floor. The fix is two-pronged: a `.github/workflows/keepalive.yml` that pings `/health` and `/` every 5 min (free, lives in this repo, soft schedule with 5–15 min jitter), plus a Railway-side "no sleep / min instances ≥ 1" toggle when the plan tier supports it. The workflow needed a YAML fix — an unquoted colon in the curl `-w` format string broke the parser at column 88; switched both run steps to block-scalar `|` syntax to match `db-backup.yml`.
+- [x] **DB connection leak.** Pages were taking 30+ seconds to load and `TypeError: Failed to fetch` was firing in the browser. `pg_stat_activity` showed a runaway 34 connections in `idle in transaction` state with ages 15–45s, all running `SELECT users.*` or `SELECT events.*` (the auth lookup pattern from `_resolve()`). Bursts of 9–11 simultaneously-leaked queries pointed straight at the dashboard's parallel page-load fan-out — the user navigates away mid-flight, Starlette doesn't always run the cleanup of generator-based DB session deps wrapped in a separate `@contextmanager`, sessions sit "idle in transaction" forever, pool saturates, every request behind it queues. Fix in `backend/db.py`:
+    - Inlined `get_session()`'s try/yield/commit/rollback/close instead of going through `with session_scope()`. Generator-based deps inside a wrapping contextmanager have an extra suspended frame that doesn't always unwind on `GeneratorExit` (Starlette's cancel signal). Flat generator with cleanup directly in `finally` is the pattern FastAPI's docs actually show.
+    - Defensive `s.rollback()` in `finally` before `close()` — no-op after a successful commit, but resets the txn if the dep was cancelled before either ran.
+    - Server-side belt: SQLAlchemy `connect` event listener that runs `SET idle_in_transaction_session_timeout = '30s'` on every new pool connection. If the cleanup somehow doesn't run, Postgres rolls back orphaned txns at 30s instead of holding the connection hostage indefinitely.
+    - `pool_recycle=300` so stale TCP connections die out cleanly across DB restarts / network blips.
+
+  All 322 backend tests passed pre-push. The first few hours after deploy, the leak watchdog (a polling monitor I wrote against `pg_stat_activity`) saw the count rise to ~15, then drop, then rise again, never crossing 20 — exactly the self-healing behavior the 30s timeout is supposed to produce. Note: `current_setting('idle_in_transaction_session_timeout')` returns the **calling session's** value, not the listed pid's, so external verification of the per-session GUC isn't possible. The fix is judged by behavior, not direct readout.
+
+  This is a workaround, not a root-cause fix. The "actually find the leaky cleanup path" investigation is parking-lot material — covered by the existing entry on `get_authenticated()` audit work.
+
+- [x] **The worker on prod doesn't exist.** Per the Phase 5A runtime decision in `MEMORY.md`, the worker is single-host and runs *on the user's laptop* (`worker/runner.py`) — prod has only the API + DB + dashboard. The user's laptop hadn't been running the worker for 3 days, so every "redeploy Polaris" today was creating a `deployments` row that nothing claimed. The screenshot showing the latest run as "1d ago" was actually from a hand-emitted Phase 9.6 demo event (`run_failed: synthetic crash for Phase 9.6 demo`), not a real Polaris tick. The actual last real Polaris run was 2026-04-29 03:06. Started the worker locally with `LIGHTSEI_WORKER_TOKEN=... LIGHTSEI_BASE_URL=https://api.lightsei.com python worker/runner.py`, queued deployment got claimed within a second.
+- [x] **Stale bundle.** First post-fix Polaris run still came up in disk mode. The bot's startup line said `docs=/private/tmp/lightsei-worker/.../src` (local) instead of `docs github=...`. Direct check of the running subprocess's env confirmed `POLARIS_GITHUB_REPO`, `POLARIS_GITHUB_BRANCH`, `POLARIS_GITHUB_TOKEN` were all injected — but a `grep -c "POLARIS_GITHUB_REPO\|_gh_config" bot.py` against the unpacked bundle returned **0**. The bundle in the deployment was the pre-Phase-10.4 `bot.py`. The user's prior `lightsei deploy ./polaris` had been from a checkout that didn't have the new code. Re-ran the deploy from the current source; new bundle had Phase 10.4 logic; banner flipped to `github=...`.
+- [x] **Phase 10.4 silently broke Phase 8's strict-schema validator.** The first plan emit on the new bundle showed `lightsei event rejected (polaris.plan): schema_strict/required — 'tasks_md' is a required property`. Phase 8's `schema_strict` config in `validator_configs` requires `doc_hashes: {memory_md, tasks_md}` (fixed keys). Phase 10.4 generalized doc handling so `doc_hashes` is now keyed by filename (`{"MEMORY.md": ..., "TASKS.md": ...}`) — same content, different shape. The pre-Phase-10.4 validator schema rejected the new shape on the first wire tour, even though the plan was generated correctly (validators run on the SDK→backend `emit` path, not on the bot's local `plan` dict). Fixed via direct DB UPDATE on `validator_configs` for `(workspace_id, polaris.plan, schema_strict)`: replaced the `doc_hashes` schema with `{type: object, minProperties: 1, additionalProperties: {type: string}}`. After the fix and a redeploy (to reset the bot's in-process hash cache, which was sticky after the rejection because `_last_hashes` is updated regardless of validator outcome), the next emit landed with `schema_strict: pass, content_rules: pass`. **Followup**: this fix touched prod data directly and isn't checked in. Should be backfilled into a migration / seed update so a fresh workspace gets the right schema.
+
+**What I ended up shipping inside this phase:**
+
+- `.github/workflows/keepalive.yml` — 5-min `/health` ping for cold-start mitigation.
+- `backend/db.py` — connection leak fix (inlined dep cleanup + 30s idle_in_transaction_session_timeout listener + pool_recycle=300).
+- Direct prod patch on `validator_configs` to accept filename-keyed `doc_hashes`.
+- `MEMORY.md` and `polaris/bot.py` got demo-marker comments to test the GitHub fetch + push-to-deploy paths; can stay or be removed in a cleanup pass — they're factually accurate either way.
+
+**Honest assessment of "git push vs `lightsei deploy`":** push wins for routine code changes — the latency from `git push` to a `running` instance was 8 seconds, and there's no tab to keep open or env to source. The CLI is still useful for (a) the very first deploy of a new agent (no GitHub integration yet), (b) iterating on a branch you don't want to push, (c) deploying from a checkout that's ahead of GitHub. For Polaris, I won't run `lightsei deploy ./polaris` again unless I'm intentionally testing locally.
+
+**Phase 10 is closed.**
 
 ### 2026-04-30 — Phase 10.5: Dashboard `/github` panel
 
