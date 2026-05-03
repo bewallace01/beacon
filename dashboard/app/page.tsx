@@ -137,7 +137,11 @@ export default function Home() {
             inner content keeps pointer events on so the headline's
             expand button still works. */}
         <div className="absolute inset-x-0 top-0 pointer-events-none">
-          <div className="max-w-md pointer-events-auto">
+          {/* Wide enough that the headline + subtitle stay on one
+              line at typical desktop widths. The hero only renders
+              text on the left two-thirds; agent stars sit further
+              right + lower so they don't collide with the type. */}
+          <div className="max-w-3xl pointer-events-auto">
             <Hero />
             <div className="px-6 sm:px-10">
               <div className="flex items-baseline gap-3">
