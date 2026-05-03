@@ -448,8 +448,52 @@ def on_startup() -> None:
 
 
 @app.get("/health")
-def health() -> dict[str, str]:
-    return {"status": "ok"}
+def health() -> dict[str, Any]:
+    """Liveness + lightweight pool/connection telemetry.
+
+    The pool counters come from SQLAlchemy's QueuePool (free, no IO). The
+    pg_stat_activity probe is one short query against a system view —
+    cheap enough to run on every /health hit and gives us a real
+    server-side view of connection state. Both are here (rather than a
+    separate /metrics) so the existing keepalive cron and Railway's
+    health check graph it for free.
+    """
+    from db import engine as _engine
+
+    pool = _engine.pool
+    pool_stats: dict[str, Any] = {
+        "size": pool.size(),
+        "checked_in": pool.checkedin(),
+        "checked_out": pool.checkedout(),
+        "overflow": pool.overflow(),
+    }
+
+    db_stats: dict[str, Any] = {}
+    try:
+        with _engine.connect() as conn:
+            row = conn.execute(
+                text(
+                    """
+                    SELECT
+                      COUNT(*) FILTER (WHERE state = 'idle in transaction') AS idle_in_txn,
+                      COUNT(*) FILTER (WHERE state = 'active')              AS active,
+                      COUNT(*) FILTER (WHERE state = 'idle')                AS idle,
+                      COUNT(*)                                              AS total
+                    FROM pg_stat_activity
+                    WHERE datname = current_database()
+                    """
+                )
+            ).one()
+            db_stats = {
+                "idle_in_txn": int(row.idle_in_txn or 0),
+                "active": int(row.active or 0),
+                "idle": int(row.idle or 0),
+                "total": int(row.total or 0),
+            }
+    except Exception as e:
+        db_stats = {"error": f"{type(e).__name__}: {e}"}
+
+    return {"status": "ok", "pool": pool_stats, "db": db_stats}
 
 
 def _rate_limited_workspace_id(
