@@ -36,6 +36,15 @@ engine = create_engine(
     DATABASE_URL,
     pool_pre_ping=True,
     pool_recycle=300,
+    # SQLAlchemy's default pool is 5 + 10 overflow = 15 connections.
+    # Combined with the dispatch + dashboard polling traffic post
+    # Phase 11, that gets saturated when even a small number of
+    # request-cancelled sessions leak (the 30s server-side
+    # idle_in_transaction_session_timeout cleans them up but the
+    # window is wide enough that bursts stack up). Tripling the
+    # pool gives breathing room until the leak source is patched.
+    pool_size=20,
+    max_overflow=40,
     future=True,
 )
 SessionLocal = sessionmaker(
